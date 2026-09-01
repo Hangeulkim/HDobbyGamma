@@ -1,0 +1,12 @@
+bin/
+obj/
+dist/
+release/
+.dotnet-home/
+.sdk/
+.nuget-packages/
+.dotnet-install.ps1
+.vs/
+*.user
+*.suo
+TestResults/
