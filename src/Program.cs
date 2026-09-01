@@ -56,7 +56,7 @@ internal static class Program
             {
                 showWindowAcknowledged.Reset();
                 showWindowSignal.Set();
-                if (!showWindowAcknowledged.WaitOne(TimeSpan.FromSeconds(1)))
+                if (!showWindowAcknowledged.WaitOne(TimeSpan.FromSeconds(5)))
                 {
                     MessageBox.Show(
                         UiText.Get(TextId.AlreadyRunning),
@@ -86,29 +86,36 @@ internal static class Program
             languageOverride: options.Language,
             startHidden: options.StartHidden);
         _ = _mainForm.Handle;
+        var uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
         var showWindowRegistration = ThreadPool.RegisterWaitForSingleObject(
             showWindowSignal,
             (_, _) =>
             {
                 var form = _mainForm;
-                if (form == null || form.IsDisposed || !form.IsHandleCreated)
+                if (form == null || form.IsDisposed)
                 {
                     return;
                 }
 
                 try
                 {
-                    form.BeginInvoke(new Action(() =>
+                    uiContext.Post(_ =>
                     {
-                        form.RestoreFromTray();
-                    }));
-                    // Acknowledge that the live instance accepted the request. The UI work may
-                    // legitimately wait behind display refresh/reapply work for more than a second.
-                    showWindowAcknowledged.Set();
+                        var liveForm = _mainForm;
+                        if (liveForm == null || liveForm.IsDisposed)
+                        {
+                            return;
+                        }
+
+                        liveForm.RestoreFromTray();
+                        showWindowAcknowledged.Set();
+                    }, null);
                 }
-                catch (InvalidOperationException)
+                catch (Exception exception) when (
+                    exception is InvalidOperationException or
+                    System.ComponentModel.InvalidAsynchronousStateException)
                 {
-                    // The window closed while the cross-instance request was being delivered.
+                    // The UI message loop closed while the cross-instance request was being delivered.
                 }
             },
             null,

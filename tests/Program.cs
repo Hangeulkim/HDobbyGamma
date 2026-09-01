@@ -226,13 +226,21 @@ internal static class Program
                 Assert(!form.IsDisposed, "Window close keeps the application running");
                 Assert(!form.Visible && !form.ShowInTaskbar, "Window close hides the application in the tray");
 
-                form.RestoreFromTray();
+                form.TrayIconOnDoubleClick(null, EventArgs.Empty);
                 Application.DoEvents();
-                Assert(form.Visible && form.ShowInTaskbar, "Tray action restores the window");
+                Assert(form.Visible && form.ShowInTaskbar, "Tray double click restores the window");
+                Assert(IsWindowVisibleOnScreen(form.Bounds),
+                    "Tray double click restores the window inside a visible work area");
 
                 form.WindowState = FormWindowState.Minimized;
                 Application.DoEvents();
                 Assert(!form.Visible && !form.ShowInTaskbar, "Minimize button hides the application in the tray");
+
+                form.RestoreFromTray();
+                Application.DoEvents();
+                Assert(form.Visible && form.ShowInTaskbar, "Tray Open menu action restores the window");
+                Assert(IsWindowVisibleOnScreen(form.Bounds),
+                    "Tray Open menu restores the window inside a visible work area");
 
                 form.ExitCompletely();
                 Application.DoEvents();
@@ -254,11 +262,13 @@ internal static class Program
                 Assert(!startupForm.Visible && !startupForm.ShowInTaskbar,
                     "Windows startup launch begins hidden in the tray");
 
-                startupForm.RestoreFromTray();
+                startupForm.TrayIconOnDoubleClick(null, EventArgs.Empty);
                 Application.DoEvents();
                 Assert(startupForm.Visible && startupForm.ShowInTaskbar &&
                        startupForm.WindowState == FormWindowState.Normal,
                     "Windows startup tray instance restores without recursive resize");
+                Assert(IsWindowVisibleOnScreen(startupForm.Bounds),
+                    "Windows startup tray instance restores inside a visible work area");
 
                 startupForm.ExitCompletely();
                 Application.DoEvents();
@@ -271,6 +281,15 @@ internal static class Program
                 Directory.Delete(directory, recursive: true);
             }
         }
+    }
+
+    private static bool IsWindowVisibleOnScreen(Rectangle bounds)
+    {
+        return Screen.AllScreens.Any(screen =>
+        {
+            var visibleBounds = Rectangle.Intersect(screen.WorkingArea, bounds);
+            return visibleBounds.Width >= 80 && visibleBounds.Height >= 48;
+        });
     }
 
     private static void TestRuntimeLanguageSwitch()

@@ -341,7 +341,7 @@ internal sealed class MainForm : Form
             ContextMenuStrip = _trayMenu,
             Visible = !previewOnly
         };
-        _notifyIcon.DoubleClick += (_, _) => RestoreFromTray();
+        _notifyIcon.DoubleClick += TrayIconOnDoubleClick;
 
         _applyTimer = new System.Windows.Forms.Timer { Interval = 90 };
         _applyTimer.Tick += ApplyTimerOnTick;
@@ -918,15 +918,61 @@ internal sealed class MainForm : Form
         try
         {
             Opacity = 1;
-            WindowState = FormWindowState.Normal;
             ShowInTaskbar = true;
             Show();
+            WindowState = FormWindowState.Normal;
+            EnsureWindowIsVisible();
+            BringToFront();
             Activate();
+
+            BeginInvoke(new Action(() =>
+            {
+                if (IsDisposed || !Visible)
+                {
+                    return;
+                }
+
+                EnsureWindowIsVisible();
+                BringToFront();
+                Activate();
+            }));
         }
         finally
         {
             _changingTrayVisibility = false;
         }
+    }
+
+    internal void TrayIconOnDoubleClick(object? sender, EventArgs e)
+    {
+        RestoreFromTray();
+    }
+
+    private void EnsureWindowIsVisible()
+    {
+        const int minimumVisibleWidth = 80;
+        const int minimumVisibleHeight = 48;
+        var currentBounds = Bounds;
+        var isVisibleOnAnyScreen = Screen.AllScreens.Any(screen =>
+        {
+            var visibleBounds = Rectangle.Intersect(screen.WorkingArea, currentBounds);
+            return visibleBounds.Width >= minimumVisibleWidth &&
+                   visibleBounds.Height >= minimumVisibleHeight;
+        });
+        if (isVisibleOnAnyScreen)
+        {
+            return;
+        }
+
+        var workingArea = Screen.FromPoint(Cursor.Position).WorkingArea;
+        var width = Math.Min(Math.Max(Width, MinimumSize.Width), workingArea.Width);
+        var height = Math.Min(Math.Max(Height, MinimumSize.Height), workingArea.Height);
+        StartPosition = FormStartPosition.Manual;
+        Bounds = new Rectangle(
+            workingArea.Left + (workingArea.Width - width) / 2,
+            workingArea.Top + (workingArea.Height - height) / 2,
+            width,
+            height);
     }
 
     internal void ExitCompletely()

@@ -23,7 +23,7 @@ The release is not code-signed, so Windows SmartScreen may show an unknown-publi
 - remembers each monitor's last value and reapplies it on the next launch
 - optional start with Windows; startup launches quietly in the system tray
 - closing or minimizing the window keeps the app running in the tray
-- `Open` and `Exit completely` tray actions
+- double-click the tray icon to reopen, or use `Open` and `Exit completely`
 - native read-back verification after gamma changes
 - automatic rollback and warning if a driver exposes one shared LUT for multiple displays
 - optional restoration of pre-launch colors when fully exiting
@@ -33,7 +33,7 @@ The release is not code-signed, so Windows SmartScreen may show an unknown-publi
 1. Select `All monitors` or one display.
 2. Move the slider or enter a value directly.
 3. Enable `Start with Windows` if you want the saved values reapplied automatically.
-4. Use the tray icon to reopen the window or exit completely.
+4. Double-click the tray icon to reopen the window, or right-click it for `Open` and `Exit completely`.
 
 Settings are stored in `%LOCALAPPDATA%\HDobbyGamma\settings.json`.
 
@@ -85,7 +85,7 @@ Windows 11에서 전체 화면 또는 모니터별 감마를 조절하는 HDobby
 - 모니터별 마지막 값을 기억하고 다음 실행 시 다시 적용
 - Windows 시작 시 자동 실행 옵션, 자동 실행 시 트레이에서 조용히 시작
 - 창의 `X` 또는 최소화 버튼을 눌러도 종료하지 않고 트레이에서 계속 실행
-- 트레이 메뉴의 `열기`와 `완전히 종료`
+- 트레이 아이콘 더블클릭으로 창 열기, 우클릭 메뉴의 `열기`와 `완전히 종료`
 - 감마 변경 후 Windows에서 실제 값을 다시 읽어 확인
 - 여러 모니터가 하나의 LUT를 공유하면 감지된 변경을 자동 원상복구하고 경고
 - 완전히 종료할 때 프로그램 실행 전 색상으로 복원하는 옵션
@@ -95,7 +95,7 @@ Windows 11에서 전체 화면 또는 모니터별 감마를 조절하는 HDobby
 1. `모든 모니터` 또는 원하는 화면 하나를 선택합니다.
 2. 슬라이더를 움직이거나 숫자를 직접 입력합니다.
 3. 다음 부팅에도 자동 적용하려면 `Windows 시작 시 자동 실행`을 켭니다.
-4. 창을 다시 열거나 완전히 종료하려면 트레이 아이콘을 사용합니다.
+4. 창을 다시 열려면 트레이 아이콘을 더블클릭하고, `열기` 또는 `완전히 종료`는 우클릭 메뉴를 사용합니다.
 
 설정은 `%LOCALAPPDATA%\HDobbyGamma\settings.json`에 저장됩니다.
 
