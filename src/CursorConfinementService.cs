@@ -12,6 +12,13 @@ internal sealed class CursorConfinementService : IDisposable
     internal bool IsActive => _ownedBounds.HasValue;
     internal Rectangle? CurrentBounds => _ownedBounds;
 
+    internal bool IsClipMatching(Rectangle bounds)
+    {
+        if (!NativeMethods.GetClipCursor(out var current))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        return current.Equals(ToNative(bounds));
+    }
+
     internal void Confine(Rectangle bounds)
     {
         if (bounds.Width <= 0 || bounds.Height <= 0)

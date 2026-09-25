@@ -447,6 +447,20 @@ internal static class Program
             }
             var targetWindow = new IntPtr(handleValue);
 
+            bool WaitForTargetClip(Rectangle targetBounds)
+            {
+                var expectedClip = CursorConfinementService.ToNative(targetBounds);
+                var deadline = DateTime.UtcNow.AddSeconds(4);
+                while (DateTime.UtcNow < deadline && NativeMethods.GetForegroundWindow() == targetWindow)
+                {
+                    Application.DoEvents();
+                    if (NativeMethods.GetClipCursor(out var observed) && observed.Equals(expectedClip))
+                        return true;
+                    Thread.Sleep(40);
+                }
+                return false;
+            }
+
             var store = new AppSettings(directory);
             var settings = store.Load(out _);
             settings.TargetExecutablePath = targetExecutable;
@@ -468,9 +482,34 @@ internal static class Program
 
             Assert(ForegroundProgram.TryGetClientBounds(targetExecutable, out var expected),
                 "Foreground target process client area is found");
-            Assert(NativeMethods.GetClipCursor(out var clipped) &&
-                   clipped.Equals(CursorConfinementService.ToNative(expected)),
+            if (NativeMethods.GetClipCursor(out var initialClip) &&
+                !initialClip.Equals(CursorConfinementService.ToNative(expected)))
+                Console.WriteLine($"CURSOR: initial clip={initialClip.Left},{initialClip.Top},{initialClip.Right},{initialClip.Bottom}; " +
+                    $"foreground={NativeMethods.GetForegroundWindow()}; status=" +
+                    string.Join(" | ", EnumerateControls(form).OfType<Label>()
+                        .Select(label => label.Text).Where(value => value.Contains("cursor", StringComparison.OrdinalIgnoreCase) ||
+                            value.Contains("마우스", StringComparison.OrdinalIgnoreCase))));
+            var initiallyApplied = WaitForTargetClip(expected);
+            if (!initiallyApplied && NativeMethods.GetForegroundWindow() != targetWindow)
+            {
+                Console.WriteLine("SKIP: foreground moved before initial confinement verification");
+                form.ExitCompletely();
+                return;
+            }
+            Assert(initiallyApplied,
                 "Enabled rule confines the cursor to the active program window");
+
+            Assert(NativeMethods.ClipCursor(IntPtr.Zero),
+                "Simulate Windows clearing the clip during Alt+Tab");
+            var reapplied = WaitForTargetClip(expected);
+            if (!reapplied && NativeMethods.GetForegroundWindow() != targetWindow)
+            {
+                Console.WriteLine("SKIP: foreground moved before clip reapplication verification");
+                form.ExitCompletely();
+                return;
+            }
+            Assert(reapplied,
+                "Enabled rule reapplies after the actual Windows clip is cleared");
 
             form.ReleaseCursorTemporarily();
             PumpMessagesFor(250);
@@ -480,7 +519,7 @@ internal static class Program
             var confinementCheck = EnumerateControls(form).OfType<CheckBox>().Single(check =>
                 check.Text == UiText.Get(TextId.ConfineCursor));
             Assert(confinementCheck.Checked, "Temporary release keeps the confinement option checked");
-            for (var attempt = 0; attempt < 3; attempt++)
+            for (var attempt = 0; attempt < 5; attempt++)
                 form.HandleConfinementRuntimeFailure(new System.ComponentModel.Win32Exception(5), expected);
             Assert(confinementCheck.Checked, "Repeated cursor API errors keep the option checked");
             Assert(EnumerateControls(form).OfType<Label>().Any(label =>
@@ -500,6 +539,23 @@ internal static class Program
             Assert(hasReleasedClip &&
                    released.Equals(CursorConfinementService.ToNative(SystemInformation.VirtualScreen)),
                 "Minimizing the target program releases the cursor");
+
+            NativeMethods.ShowWindow(targetWindow, 9); // SW_RESTORE
+            NativeMethods.SetForegroundWindow(targetWindow);
+            PumpMessagesFor(400);
+            if (NativeMethods.GetForegroundWindow() == targetWindow)
+            {
+                Assert(ForegroundProgram.TryGetClientBounds(targetExecutable, out var returnedBounds,
+                        (uint)Environment.ProcessId),
+                    "Restored target client area is available");
+                Assert(WaitForTargetClip(returnedBounds),
+                    "Returning to the target after Alt+Tab reapplies mouse confinement");
+                Assert(confinementCheck.Checked, "Alt+Tab keeps the confinement option checked");
+            }
+            else
+            {
+                Console.WriteLine("SKIP: Windows prevented the target window from returning to foreground");
+            }
 
             form.ExitCompletely();
             Application.DoEvents();

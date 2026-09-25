@@ -79,6 +79,9 @@ internal sealed class MainForm : Form
     private bool _confinementSuppressedUntilFocusLoss;
     private int _confinementErrorCount;
     private Rectangle? _failedConfinementBounds;
+    private DateTime _nextConfinementAttemptUtc;
+    private DateTime _lastClipOverrideUtc;
+    private int _clipOverrideCount;
     private bool _uiReady;
     private bool _hadHandle;
     private double _pendingGamma = 1.0;
@@ -1090,6 +1093,8 @@ internal sealed class MainForm : Form
         _confinementSuppressedUntilFocusLoss = false;
         _confinementErrorCount = 0;
         _failedConfinementBounds = null;
+        _nextConfinementAttemptUtc = DateTime.MinValue;
+        _clipOverrideCount = 0;
         _confineCursorCheck.Enabled = true;
         ScheduleSave();
         if (_settings.ConfineCursor)
@@ -1241,6 +1246,8 @@ internal sealed class MainForm : Form
         _confinementSuppressedUntilFocusLoss = false;
         _confinementErrorCount = 0;
         _failedConfinementBounds = null;
+        _nextConfinementAttemptUtc = DateTime.MinValue;
+        _clipOverrideCount = 0;
         _trayReleaseCursorItem.Enabled = true;
         SetConfineCheck(true);
         _confinementTimer.Start();
@@ -1254,15 +1261,44 @@ internal sealed class MainForm : Form
                 (uint)Environment.ProcessId))
         {
             if (_confinementSuppressedUntilFocusLoss) return;
-            if (_failedConfinementBounds == bounds && _confinementErrorCount >= 3) return;
             if (_failedConfinementBounds != bounds)
             {
                 _confinementErrorCount = 0;
                 _failedConfinementBounds = bounds;
+                _nextConfinementAttemptUtc = DateTime.MinValue;
+                _clipOverrideCount = 0;
             }
+            if (_confinementErrorCount >= 5 || _clipOverrideCount >= 5 ||
+                DateTime.UtcNow < _nextConfinementAttemptUtc) return;
             try
             {
-                if (_cursorConfinement.CurrentBounds != bounds) _cursorConfinement.Confine(bounds);
+                if (_cursorConfinement.CurrentBounds == bounds)
+                {
+                    if (_cursorConfinement.IsClipMatching(bounds))
+                    {
+                        if (DateTime.UtcNow - _lastClipOverrideUtc > TimeSpan.FromSeconds(10))
+                            _clipOverrideCount = 0;
+                        _confinementErrorCount = 0;
+                        return;
+                    }
+
+                    // Windows or the target program can clear the clip during Alt+Tab
+                    // without a timer tick observing the intermediate focus loss.
+                    if (DateTime.UtcNow - _lastClipOverrideUtc > TimeSpan.FromSeconds(10))
+                        _clipOverrideCount = 0;
+                    _clipOverrideCount++;
+                    _lastClipOverrideUtc = DateTime.UtcNow;
+                    if (_clipOverrideCount >= 5)
+                    {
+                        ShowStatus(UiText.Get(TextId.ConfinePaused), StatusKind.Warning);
+                        return;
+                    }
+                }
+
+                _cursorConfinement.Confine(bounds);
+                if (!_cursorConfinement.IsClipMatching(bounds))
+                    throw new System.ComponentModel.Win32Exception(
+                        UiText.Get(TextId.ConfineReadbackFailed));
                 _confinementErrorCount = 0;
             }
             catch (System.ComponentModel.Win32Exception exception)
@@ -1274,8 +1310,15 @@ internal sealed class MainForm : Form
             return;
         }
 
+        if (_failedConfinementBounds.HasValue)
+        {
+            _confinementErrorCount = 0;
+            _nextConfinementAttemptUtc = DateTime.MinValue;
+        }
         _confinementSuppressedUntilFocusLoss = false;
         _failedConfinementBounds = null;
+        _clipOverrideCount = 0;
+        if (DateTime.UtcNow < _nextConfinementAttemptUtc) return;
         try
         {
             _cursorConfinement.Release();
@@ -1292,12 +1335,15 @@ internal sealed class MainForm : Form
     {
         _confinementErrorCount++;
         _failedConfinementBounds = attemptedBounds;
-        ShowStatus(_confinementErrorCount >= 3
+        var delays = new[] { 350, 750, 1500, 3000 };
+        if (_confinementErrorCount <= delays.Length)
+            _nextConfinementAttemptUtc = DateTime.UtcNow.AddMilliseconds(delays[_confinementErrorCount - 1]);
+        ShowStatus(_confinementErrorCount >= 5
                 ? UiText.Get(TextId.ConfinePaused)
                 : UiText.Format(TextId.ConfineFailed, exception.Message), StatusKind.Warning);
-        // A failing write is retried at most three times for the same bounds. A failing
-        // release is retried three times, then the hotkey remains available for recovery.
-        if (attemptedBounds == null && _confinementErrorCount >= 3)
+        // A failing write is retried at most five times for the same bounds, spaced
+        // across several seconds so a fullscreen focus transition can complete.
+        if (attemptedBounds == null && _confinementErrorCount >= 5)
             _confinementTimer.Stop();
     }
 
@@ -1312,6 +1358,8 @@ internal sealed class MainForm : Form
                     (uint)Environment.ProcessId);
             _confinementErrorCount = 0;
             _failedConfinementBounds = null;
+            _nextConfinementAttemptUtc = DateTime.MinValue;
+            _clipOverrideCount = 0;
             _confinementTimer.Start();
             ShowStatus(UiText.Get(TextId.ConfineReleased), StatusKind.Info);
         }
