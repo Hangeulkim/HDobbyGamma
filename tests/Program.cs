@@ -11,6 +11,11 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Contains("--cursor-target", StringComparer.OrdinalIgnoreCase))
+        {
+            return RunCursorTarget();
+        }
+
         try
         {
             TestGammaMath();
@@ -19,6 +24,12 @@ internal static class Program
             TestDisplayEnumerationReadOnly();
             TestRuntimeLanguageSwitch();
             TestTrayLifecycle();
+
+            if (args.Contains("--native-cursor", StringComparer.OrdinalIgnoreCase))
+            {
+                TestNativeCursorConfinement();
+                TestProgramConfinementLifecycle();
+            }
 
             if (args.Contains("--native-apply", StringComparer.OrdinalIgnoreCase))
             {
@@ -45,6 +56,21 @@ internal static class Program
             Console.Error.WriteLine("FAIL: " + exception);
             return 1;
         }
+    }
+
+    private static int RunCursorTarget()
+    {
+        using var form = new Form
+        {
+            Text = "HDobby Gamma cursor target",
+            StartPosition = FormStartPosition.CenterScreen,
+            Size = new Size(480, 300)
+        };
+        form.Show();
+        Console.WriteLine("TARGET_HANDLE:" + form.Handle.ToInt64().ToString(CultureInfo.InvariantCulture));
+        Console.Out.Flush();
+        Application.Run(form);
+        return 0;
     }
 
     private static void TestLocalizationAndStartupCommand()
@@ -125,10 +151,14 @@ internal static class Program
             Assert(initial.RestoreOnExit, "Restore on exit defaults true");
             Assert(new[] { "ko", "en" }.Contains(initial.Language), "Default language is supported");
             Assert(!initial.StartWithWindows, "Start with Windows defaults false");
+            Assert(!initial.ConfineCursor, "Mouse confinement defaults off");
+            Assert(initial.TargetExecutablePath.Length == 0, "Target program defaults unset");
 
             initial.SelectedDevice = @"monitor:\\?\DISPLAY#MONITOR_B";
             initial.Language = "en";
             initial.StartWithWindows = true;
+            initial.ConfineCursor = true;
+            initial.TargetExecutablePath = @"C:\Games\Example Game\game.exe";
             initial.GammaByDevice[@"monitor:\\?\DISPLAY#MONITOR_A"] = 1.25;
             initial.GammaByDevice[@"monitor:\\?\DISPLAY#MONITOR_B"] = 0.80;
             store.Save(initial);
@@ -140,7 +170,10 @@ internal static class Program
                 "Gamma round trip");
             Assert(loaded.Language == "en", "Language round trip");
             Assert(loaded.StartWithWindows, "Start with Windows round trip");
-            Assert(loaded.SchemaVersion == 3, "Settings schema upgraded to version 3");
+            Assert(loaded.ConfineCursor, "Mouse confinement round trip");
+            Assert(loaded.TargetExecutablePath == @"C:\Games\Example Game\game.exe",
+                "Target executable path round trip");
+            Assert(loaded.SchemaVersion == 4, "Settings schema upgraded to version 4");
 
             File.WriteAllText(
                 store.PathForDiagnostics,
@@ -149,7 +182,9 @@ internal static class Program
                 "\"GammaByDevice\":{\"\\\\\\\\.\\\\DISPLAY1\":1.4}}");
             var migrated = store.Load(out var migrationWarning);
             Assert(migrationWarning == SettingsLoadWarning.None, "Version 1 settings migrate without warning");
-            Assert(migrated.SchemaVersion == 3, "Version 1 settings migrate to current schema");
+            Assert(migrated.SchemaVersion == 4, "Version 1 settings migrate to current schema");
+            Assert(!migrated.ConfineCursor, "Version 1 settings keep mouse confinement off");
+            Assert(migrated.TargetExecutablePath.Length == 0, "Version 1 has no target program");
             Assert(!migrated.RestoreOnExit, "Version 1 restore preference preserved");
             Assert(Math.Abs(migrated.GammaByDevice[@"\\.\DISPLAY1"] - 1.4) < 0.0001,
                 "Version 1 gamma preserved");
@@ -202,6 +237,187 @@ internal static class Program
             var ramp = service.ReadCurrentRamp(target.DeviceName, out var error);
             Assert(ramp != null && error == null, "Supported display ramp can be read");
             Assert(ramp!.Values.Length == GammaRamp.TotalLength, "Native ramp size");
+        }
+    }
+
+    private static void TestNativeCursorConfinement()
+    {
+        Assert(!ForegroundProgram.TryGetClientBounds(string.Empty, out _),
+            "No program leaves the cursor free");
+        using (var targetWindow = new Form
+               {
+                   Text = "HDobby Gamma cursor target test",
+                   StartPosition = FormStartPosition.CenterScreen,
+                   Size = new Size(420, 260)
+               })
+        {
+            targetWindow.Show();
+            targetWindow.Activate();
+            Application.DoEvents();
+            if (NativeMethods.GetForegroundWindow() == targetWindow.Handle)
+            {
+                Assert(ForegroundProgram.TryGetClientBounds(Environment.ProcessPath!, out var clientBounds) &&
+                       clientBounds.Width > 0 && clientBounds.Height > 0,
+                    "Active target program client area is found");
+                Assert(!ForegroundProgram.TryGetClientBounds(@"C:\missing\other.exe", out _),
+                    "Unrelated program is not treated as the target");
+            }
+            else
+            {
+                Console.WriteLine("SKIP: test window could not become foreground");
+            }
+            targetWindow.Close();
+            Application.DoEvents();
+        }
+
+        AssertThrows(() => new CursorConfinementService().Confine(Rectangle.Empty),
+            "Empty cursor bounds rejected");
+        if (!NativeMethods.GetClipCursor(out var before))
+        {
+            throw new InvalidOperationException("Could not read the current cursor clip.");
+        }
+
+        var fullDesktop = CursorConfinementService.ToNative(SystemInformation.VirtualScreen);
+        if (!before.Equals(fullDesktop))
+        {
+            Console.WriteLine("SKIP: another program already confines the cursor");
+            return;
+        }
+
+        var bounds = Screen.FromPoint(Cursor.Position).Bounds;
+        using var service = new CursorConfinementService();
+        try
+        {
+            service.Confine(bounds);
+            Assert(service.IsActive, "Cursor confinement active");
+            Assert(NativeMethods.GetClipCursor(out var clipped) &&
+                   clipped.Equals(CursorConfinementService.ToNative(bounds)),
+                "Windows cursor clip matches selected monitor");
+        }
+        finally
+        {
+            service.Release();
+        }
+
+        Assert(!service.IsActive, "Cursor confinement released");
+        Assert(NativeMethods.GetClipCursor(out var after) && after.Equals(before),
+            "Windows cursor clip restored after release");
+
+        using var collapsedService = new CursorConfinementService();
+        try
+        {
+            collapsedService.Confine(bounds);
+            var pointClip = new NativeMethods.NativeRect
+            {
+                Left = bounds.Left + 1,
+                Top = bounds.Top + 1,
+                Right = bounds.Left + 1,
+                Bottom = bounds.Top + 1
+            };
+            Assert(NativeMethods.ClipCursor(ref pointClip), "Windows accepts a point clip");
+            collapsedService.Release();
+            Assert(NativeMethods.GetClipCursor(out var afterCollapse) && afterCollapse.Equals(before),
+                "Degenerate clip is released after window changes");
+        }
+        finally
+        {
+            NativeMethods.ClipCursor(IntPtr.Zero);
+        }
+    }
+
+    private static void TestProgramConfinementLifecycle()
+    {
+        if (!NativeMethods.GetClipCursor(out var originalClip) ||
+            !originalClip.Equals(CursorConfinementService.ToNative(SystemInformation.VirtualScreen)))
+        {
+            Console.WriteLine("SKIP: cursor is already confined by another program");
+            return;
+        }
+
+        var targetExecutable = Path.Combine(AppContext.BaseDirectory, "GammaControl.Tests.exe");
+        var startInfo = new ProcessStartInfo(targetExecutable, "--cursor-target")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true
+        };
+        startInfo.Environment["DOTNET_ROOT"] = Path.GetDirectoryName(Environment.ProcessPath!)!;
+        using var targetProcess = Process.Start(startInfo) ??
+                                  throw new InvalidOperationException("Could not launch the cursor target process.");
+        var directory = Path.Combine(Path.GetTempPath(), "GammaControlCursorTests-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var ready = targetProcess.StandardOutput.ReadLineAsync();
+            if (!ready.Wait(TimeSpan.FromSeconds(10)) ||
+                ready.Result is not { } readyLine ||
+                !readyLine.StartsWith("TARGET_HANDLE:", StringComparison.Ordinal) ||
+                !long.TryParse(readyLine["TARGET_HANDLE:".Length..], CultureInfo.InvariantCulture, out var handleValue))
+            {
+                throw new InvalidOperationException("The cursor target window did not start.");
+            }
+            var targetWindow = new IntPtr(handleValue);
+
+            var store = new AppSettings(directory);
+            var settings = store.Load(out _);
+            settings.TargetExecutablePath = targetExecutable;
+            settings.ConfineCursor = true;
+            store.Save(settings);
+
+            using var form = new MainForm(settingsDirectory: directory, manageStartup: false);
+            form.Show();
+            NativeMethods.SetForegroundWindow(targetWindow);
+            PumpMessagesFor(300);
+            if (NativeMethods.GetForegroundWindow() != targetWindow)
+            {
+                Console.WriteLine("SKIP: target process window could not become foreground");
+                form.ExitCompletely();
+                Assert(store.Load(out _).ConfineCursor,
+                    "Exiting without foreground keeps the confinement preference");
+                return;
+            }
+
+            Assert(ForegroundProgram.TryGetClientBounds(targetExecutable, out var expected),
+                "Foreground target process client area is found");
+            Assert(NativeMethods.GetClipCursor(out var clipped) &&
+                   clipped.Equals(CursorConfinementService.ToNative(expected)),
+                "Enabled rule confines the cursor to the active program window");
+
+            NativeMethods.ShowWindow(targetWindow, 6); // SW_MINIMIZE
+            PumpMessagesFor(350);
+            Assert(NativeMethods.IsIconic(targetWindow), "Target program window is minimized");
+            Assert(!ForegroundProgram.TryGetClientBounds(targetExecutable, out _),
+                "Minimized target is no longer eligible for confinement");
+            Assert(NativeMethods.GetClipCursor(out var released) &&
+                   released.Equals(CursorConfinementService.ToNative(SystemInformation.VirtualScreen)),
+                "Minimizing the target program releases the cursor");
+
+            form.ExitCompletely();
+            Application.DoEvents();
+            Assert(store.Load(out _).ConfineCursor,
+                "Fully exiting preserves the program confinement preference for next launch");
+        }
+        finally
+        {
+            if (!targetProcess.HasExited)
+            {
+                targetProcess.Kill(entireProcessTree: true);
+                targetProcess.WaitForExit(3000);
+            }
+            NativeMethods.ClipCursor(IntPtr.Zero);
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    private static void PumpMessagesFor(int milliseconds)
+    {
+        var watch = Stopwatch.StartNew();
+        while (watch.ElapsedMilliseconds < milliseconds)
+        {
+            Application.DoEvents();
+            Thread.Sleep(10);
         }
     }
 

@@ -22,6 +22,8 @@ The release is not code-signed, so Windows SmartScreen may show an unknown-publi
 - Korean and English interface with an in-app language selector
 - remembers each monitor's last value and reapplies it on the next launch
 - optional start with Windows; startup launches quietly in the system tray
+- optional mouse confinement to a chosen program's active window, restored on the next launch
+- release mouse confinement with `Ctrl+Alt+L` or the tray menu
 - closing or minimizing the window keeps the app running in the tray
 - double-click the tray icon to reopen, or use `Open` and `Exit completely`
 - native read-back verification after gamma changes
@@ -32,8 +34,9 @@ The release is not code-signed, so Windows SmartScreen may show an unknown-publi
 
 1. Select `All monitors` or one display.
 2. Move the slider or enter a value directly.
-3. Enable `Start with Windows` if you want the saved values reapplied automatically.
-4. Double-click the tray icon to reopen the window, or right-click it for `Open` and `Exit completely`.
+3. Browse to the target program's `.exe`, then check `Confine mouse to target window while active`. The mouse is released when that window loses focus, is minimized, or closes.
+4. Enable `Start with Windows` if you want the saved values and program rule restored automatically.
+5. Double-click the tray icon to reopen the window, or right-click it for `Open`, `Release mouse confinement`, and `Exit completely`.
 
 Settings are stored in `%LOCALAPPDATA%\HDobbyGamma\settings.json`.
 
@@ -84,6 +87,8 @@ Windows 11에서 전체 화면 또는 모니터별 감마를 조절하는 HDobby
 - 프로그램 안에서 전환하는 한국어·영어 UI
 - 모니터별 마지막 값을 기억하고 다음 실행 시 다시 적용
 - Windows 시작 시 자동 실행 옵션, 자동 실행 시 트레이에서 조용히 시작
+- 지정한 프로그램의 활성 창 안에 마우스 포인터 가두기, 다음 실행 시 설정 복원
+- `Ctrl+Alt+L` 또는 트레이 메뉴로 마우스 가두기 해제
 - 창의 `X` 또는 최소화 버튼을 눌러도 종료하지 않고 트레이에서 계속 실행
 - 트레이 아이콘 더블클릭으로 창 열기, 우클릭 메뉴의 `열기`와 `완전히 종료`
 - 감마 변경 후 Windows에서 실제 값을 다시 읽어 확인
@@ -94,8 +99,9 @@ Windows 11에서 전체 화면 또는 모니터별 감마를 조절하는 HDobby
 
 1. `모든 모니터` 또는 원하는 화면 하나를 선택합니다.
 2. 슬라이더를 움직이거나 숫자를 직접 입력합니다.
-3. 다음 부팅에도 자동 적용하려면 `Windows 시작 시 자동 실행`을 켭니다.
-4. 창을 다시 열려면 트레이 아이콘을 더블클릭하고, `열기` 또는 `완전히 종료`는 우클릭 메뉴를 사용합니다.
+3. 대상 프로그램의 `.exe`를 고른 다음 `대상 프로그램 사용 중 마우스를 창 안에 가두기`를 켭니다. 해당 창이 비활성화되거나 최소화되거나 닫히면 마우스가 풀립니다.
+4. 다음 부팅에도 저장된 설정을 적용하려면 `Windows 시작 시 자동 실행`을 켭니다.
+5. 창을 다시 열려면 트레이 아이콘을 더블클릭하고, `열기`, `마우스 가두기 해제`, `완전히 종료`는 우클릭 메뉴를 사용합니다.
 
 설정은 `%LOCALAPPDATA%\HDobbyGamma\settings.json`에 저장됩니다.
 

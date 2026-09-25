@@ -6,6 +6,9 @@ namespace GammaControl;
 
 internal sealed class MainForm : Form
 {
+    private const int WmHotkey = 0x0312;
+    private const int ReleaseCursorHotkeyId = 0x4844;
+
     private sealed class AllDisplaysItem
     {
         internal AllDisplaysItem(int count)
@@ -37,6 +40,7 @@ internal sealed class MainForm : Form
     private readonly bool _startHidden;
     private readonly bool _manageStartup;
     private readonly StartupManager _startupManager;
+    private readonly CursorConfinementService _cursorConfinement = new();
     private readonly ComboBox _monitorCombo;
     private readonly ComboBox _languageCombo;
     private readonly TrackBar _gammaSlider;
@@ -46,18 +50,25 @@ internal sealed class MainForm : Form
     private readonly Label _monitorDetailLabel;
     private readonly CheckBox _restoreOnExitCheck;
     private readonly CheckBox _startWithWindowsCheck;
+    private readonly TextBox _targetProgramPathBox;
+    private readonly CheckBox _confineCursorCheck;
     private readonly NotifyIcon _notifyIcon;
     private readonly ContextMenuStrip _trayMenu;
     private readonly ToolStripMenuItem _trayOpenItem;
+    private readonly ToolStripMenuItem _trayReleaseCursorItem;
     private readonly ToolStripMenuItem _trayExitItem;
     private readonly System.Windows.Forms.Timer _applyTimer;
     private readonly System.Windows.Forms.Timer _saveTimer;
     private readonly System.Windows.Forms.Timer _displayRefreshTimer;
+    private readonly System.Windows.Forms.Timer _confinementTimer;
     private bool _suppressInput;
     private bool _restored;
     private bool _allowExit;
     private bool _trayNoticeShown;
     private bool _changingTrayVisibility;
+    private bool _releaseHotkeyRegistered;
+    private bool _uiReady;
+    private bool _hadHandle;
     private double _pendingGamma = 1.0;
     private string? _pendingDeviceName;
     private bool _hasPendingApply;
@@ -74,6 +85,8 @@ internal sealed class MainForm : Form
     private Button _resetAllButton = null!;
     private Label _caveatLabel = null!;
     private Label _shortcutLabel = null!;
+    private Label _targetProgramLabel = null!;
+    private Button _chooseProgramButton = null!;
 
     internal MainForm(
         bool previewOnly = false,
@@ -97,8 +110,8 @@ internal sealed class MainForm : Form
 
         Text = UiText.Get(TextId.WindowTitle);
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(680, 620);
-        ClientSize = new Size(720, 650);
+        MinimumSize = new Size(680, 700);
+        ClientSize = new Size(720, 740);
         BackColor = Color.FromArgb(245, 247, 250);
         Font = new Font("Segoe UI", 10F, FontStyle.Regular, GraphicsUnit.Point);
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -151,7 +164,7 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 10,
+            RowCount = 12,
             Padding = new Padding(22, 18, 22, 18),
             Margin = new Padding(0, 18, 0, 12),
             BackColor = Color.White
@@ -160,6 +173,8 @@ internal sealed class MainForm : Form
         card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         card.RowStyles.Add(new RowStyle(SizeType.Absolute, 66));
+        card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -293,6 +308,53 @@ internal sealed class MainForm : Form
         _startWithWindowsCheck.CheckedChanged += StartWithWindowsCheckOnCheckedChanged;
         card.Controls.Add(_startWithWindowsCheck, 0, 8);
 
+        var programRow = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 3,
+            RowCount = 1,
+            Height = 35,
+            Margin = new Padding(0, 1, 0, 7)
+        };
+        programRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 115F));
+        programRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        programRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 95F));
+        _targetProgramLabel = new Label
+        {
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Text = UiText.Get(TextId.TargetProgram)
+        };
+        _targetProgramPathBox = new TextBox
+        {
+            Dock = DockStyle.Fill,
+            ReadOnly = true,
+            Text = _settings.TargetExecutablePath,
+            AccessibleName = UiText.Get(TextId.TargetProgramAccessible)
+        };
+        _chooseProgramButton = NewButton(UiText.Get(TextId.ChooseProgram), ChooseProgramButtonOnClick, false);
+        _chooseProgramButton.AutoSize = false;
+        _chooseProgramButton.Dock = DockStyle.Fill;
+        _chooseProgramButton.Padding = Padding.Empty;
+        _chooseProgramButton.Margin = new Padding(6, 0, 0, 0);
+        programRow.Controls.Add(_targetProgramLabel, 0, 0);
+        programRow.Controls.Add(_targetProgramPathBox, 1, 0);
+        programRow.Controls.Add(_chooseProgramButton, 2, 0);
+        card.Controls.Add(programRow, 0, 9);
+
+        _confineCursorCheck = new CheckBox
+        {
+            AutoSize = false,
+            Dock = DockStyle.Top,
+            Height = 26,
+            Text = UiText.Get(TextId.ConfineCursor),
+            Checked = _settings.ConfineCursor,
+            Margin = new Padding(1, 1, 0, 8),
+            AccessibleName = UiText.Get(TextId.ConfineAccessible)
+        };
+        _confineCursorCheck.CheckedChanged += ConfineCursorCheckOnCheckedChanged;
+        card.Controls.Add(_confineCursorCheck, 0, 10);
+
         _statusLabel = new Label
         {
             Dock = DockStyle.Top,
@@ -307,7 +369,7 @@ internal sealed class MainForm : Form
                 : UiText.Get(TextId.Ready),
             TextAlign = ContentAlignment.MiddleLeft
         };
-        card.Controls.Add(_statusLabel, 0, 9);
+        card.Controls.Add(_statusLabel, 0, 11);
 
         _caveatLabel = new Label
         {
@@ -330,8 +392,11 @@ internal sealed class MainForm : Form
 
         _trayMenu = new ContextMenuStrip();
         _trayOpenItem = new ToolStripMenuItem(UiText.Get(TextId.TrayOpen), null, (_, _) => RestoreFromTray());
+        _trayReleaseCursorItem = new ToolStripMenuItem(UiText.Get(TextId.TrayReleaseCursor), null,
+            (_, _) => DisableCursorConfinement(showStatus: true)) { Enabled = false };
         _trayExitItem = new ToolStripMenuItem(UiText.Get(TextId.TrayExit), null, (_, _) => ExitCompletely());
         _trayMenu.Items.Add(_trayOpenItem);
+        _trayMenu.Items.Add(_trayReleaseCursorItem);
         _trayMenu.Items.Add(new ToolStripSeparator());
         _trayMenu.Items.Add(_trayExitItem);
         _notifyIcon = new NotifyIcon
@@ -349,6 +414,8 @@ internal sealed class MainForm : Form
         _saveTimer.Tick += SaveTimerOnTick;
         _displayRefreshTimer = new System.Windows.Forms.Timer { Interval = 850 };
         _displayRefreshTimer.Tick += DisplayRefreshTimerOnTick;
+        _confinementTimer = new System.Windows.Forms.Timer { Interval = 150 };
+        _confinementTimer.Tick += ConfinementTimerOnTick;
 
         FormClosing += MainFormOnFormClosing;
         Resize += MainFormOnResize;
@@ -356,6 +423,7 @@ internal sealed class MainForm : Form
         Shown += MainFormOnShown;
         SystemEvents.DisplaySettingsChanged += SystemEventsOnDisplaySettingsChanged;
         SystemEvents.PowerModeChanged += SystemEventsOnPowerModeChanged;
+        _uiReady = true;
     }
 
     private Control BuildHeader()
@@ -483,6 +551,11 @@ internal sealed class MainForm : Form
             }
         }
 
+        if (_settings.ConfineCursor && !_previewOnly)
+        {
+            EnableCursorConfinement();
+        }
+
         if (_startHidden)
         {
             BeginInvoke(new Action(() => MinimizeToTray(showNotification: false)));
@@ -522,9 +595,15 @@ internal sealed class MainForm : Form
         _restoreOnExitCheck.AccessibleName = UiText.Get(TextId.RestoreAccessible);
         _startWithWindowsCheck.Text = UiText.Get(TextId.StartWithWindows);
         _startWithWindowsCheck.AccessibleName = UiText.Get(TextId.StartAccessible);
+        _targetProgramLabel.Text = UiText.Get(TextId.TargetProgram);
+        _targetProgramPathBox.AccessibleName = UiText.Get(TextId.TargetProgramAccessible);
+        _chooseProgramButton.Text = UiText.Get(TextId.ChooseProgram);
+        _confineCursorCheck.Text = UiText.Get(TextId.ConfineCursor);
+        _confineCursorCheck.AccessibleName = UiText.Get(TextId.ConfineAccessible);
         _caveatLabel.Text = UiText.Get(TextId.Caveat);
         _shortcutLabel.Text = UiText.Get(TextId.Shortcut);
         _trayOpenItem.Text = UiText.Get(TextId.TrayOpen);
+        _trayReleaseCursorItem.Text = UiText.Get(TextId.TrayReleaseCursor);
         _trayExitItem.Text = UiText.Get(TextId.TrayExit);
         _notifyIcon.Text = UiText.Get(TextId.WindowTitle);
         RebuildMonitorCombo(_gammaService.Targets, _settings.SelectedDevice);
@@ -633,6 +712,7 @@ internal sealed class MainForm : Form
 
     private void UpdateEditorForSelection()
     {
+        _confineCursorCheck.Enabled = !_previewOnly && File.Exists(_settings.TargetExecutablePath);
         if (_monitorCombo.SelectedItem is DisplayTarget target)
         {
             var linked = _gammaService.IsLinked(target.DeviceName);
@@ -860,6 +940,174 @@ internal sealed class MainForm : Form
         }
     }
 
+    private void ChooseProgramButtonOnClick(object? sender, EventArgs e)
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = UiText.Get(TextId.TargetProgram),
+            Filter = "Programs (*.exe)|*.exe",
+            CheckFileExists = true,
+            FileName = File.Exists(_settings.TargetExecutablePath)
+                ? _settings.TargetExecutablePath
+                : string.Empty
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        try
+        {
+            _cursorConfinement.Release();
+        }
+        catch (System.ComponentModel.Win32Exception exception)
+        {
+            ShowStatus(UiText.Format(TextId.ConfineFailed, exception.Message), StatusKind.Error);
+            return;
+        }
+        _settings.TargetExecutablePath = Path.GetFullPath(dialog.FileName);
+        _targetProgramPathBox.Text = _settings.TargetExecutablePath;
+        _confineCursorCheck.Enabled = true;
+        ScheduleSave();
+        if (_settings.ConfineCursor)
+        {
+            ShowStatus(UiText.Get(TextId.ConfineEnabled), StatusKind.Info);
+        }
+    }
+
+    private void ConfineCursorCheckOnCheckedChanged(object? sender, EventArgs e)
+    {
+        if (_suppressInput || _previewOnly)
+        {
+            return;
+        }
+
+        if (_confineCursorCheck.Checked)
+        {
+            EnableCursorConfinement();
+        }
+        else
+        {
+            DisableCursorConfinement(showStatus: true);
+        }
+    }
+
+    private void EnableCursorConfinement()
+    {
+        if (!File.Exists(_settings.TargetExecutablePath))
+        {
+            RejectCursorConfinement(UiText.Get(TextId.ConfineRequiresProgram));
+            return;
+        }
+
+        if (!_releaseHotkeyRegistered)
+        {
+            _releaseHotkeyRegistered = NativeMethods.RegisterHotKey(
+                Handle, ReleaseCursorHotkeyId,
+                NativeMethods.ModControl | NativeMethods.ModAlt | NativeMethods.ModNoRepeat,
+                (uint)Keys.L);
+            if (!_releaseHotkeyRegistered)
+            {
+                RejectCursorConfinement(UiText.Get(TextId.ConfineHotkeyUnavailable));
+                return;
+            }
+        }
+
+        _settings.ConfineCursor = true;
+        _trayReleaseCursorItem.Enabled = true;
+        SetConfineCheck(true);
+        _confinementTimer.Start();
+        ScheduleSave();
+        ShowStatus(UiText.Get(TextId.ConfineEnabled), StatusKind.Success);
+    }
+
+    private void ConfinementTimerOnTick(object? sender, EventArgs e)
+    {
+        try
+        {
+            if (ForegroundProgram.TryGetClientBounds(_settings.TargetExecutablePath, out var bounds))
+            {
+                if (_cursorConfinement.CurrentBounds != bounds)
+                {
+                    _cursorConfinement.Confine(bounds);
+                }
+            }
+            else
+            {
+                _cursorConfinement.Release();
+            }
+        }
+        catch (System.ComponentModel.Win32Exception exception)
+        {
+            RejectCursorConfinement(UiText.Format(TextId.ConfineFailed, exception.Message));
+        }
+    }
+
+    private void RejectCursorConfinement(string message)
+    {
+        DisableCursorConfinement(showStatus: false);
+        ShowStatus(message, StatusKind.Warning);
+    }
+
+    private void DisableCursorConfinement(bool showStatus)
+    {
+        if (!StopConfinementRuntime())
+        {
+            SetConfineCheck(true);
+            _confinementTimer.Start();
+            return;
+        }
+
+        _settings.ConfineCursor = false;
+        _trayReleaseCursorItem.Enabled = false;
+        SetConfineCheck(false);
+        ScheduleSave();
+        if (showStatus)
+        {
+            ShowStatus(UiText.Get(TextId.ConfineReleased), StatusKind.Info);
+        }
+    }
+
+    private bool StopConfinementRuntime()
+    {
+        _confinementTimer.Stop();
+        try
+        {
+            _cursorConfinement.Release();
+        }
+        catch (System.ComponentModel.Win32Exception exception)
+        {
+            ShowStatus(UiText.Format(TextId.ConfineFailed, exception.Message), StatusKind.Error);
+            return false;
+        }
+
+        if (_releaseHotkeyRegistered)
+        {
+            NativeMethods.UnregisterHotKey(Handle, ReleaseCursorHotkeyId);
+            _releaseHotkeyRegistered = false;
+        }
+
+        return true;
+    }
+
+    private void SetConfineCheck(bool value)
+    {
+        _suppressInput = true;
+        _confineCursorCheck.Checked = value;
+        _suppressInput = false;
+    }
+
+    protected override void WndProc(ref Message message)
+    {
+        if (message.Msg == WmHotkey && message.WParam == (IntPtr)ReleaseCursorHotkeyId)
+        {
+            DisableCursorConfinement(showStatus: true);
+            return;
+        }
+
+        base.WndProc(ref message);
+    }
+
     private void MainFormOnResize(object? sender, EventArgs e)
     {
         if (!_previewOnly && !_changingTrayVisibility && WindowState == FormWindowState.Minimized)
@@ -1019,6 +1267,17 @@ internal sealed class MainForm : Form
         {
             BeginInvoke(new Action(() =>
             {
+                if (_cursorConfinement.IsActive)
+                {
+                    try
+                    {
+                        _cursorConfinement.Release();
+                    }
+                    catch (System.ComponentModel.Win32Exception exception)
+                    {
+                        ShowStatus(UiText.Format(TextId.ConfineFailed, exception.Message), StatusKind.Error);
+                    }
+                }
                 _displayRefreshTimer.Stop();
                 _displayRefreshTimer.Start();
             }));
@@ -1069,6 +1328,7 @@ internal sealed class MainForm : Form
         }
 
         CancelPendingApply();
+        StopConfinementRuntime();
         _saveTimer.Stop();
         _displayRefreshTimer.Stop();
         TrySaveSettings();
@@ -1079,6 +1339,10 @@ internal sealed class MainForm : Form
             e.Cancel = true;
             _allowExit = false;
             RestoreFromTray();
+            if (_settings.ConfineCursor)
+            {
+                EnableCursorConfinement();
+            }
             var message = UiText.Get(TextId.RestoreFailed);
             ShowStatus(message, StatusKind.Error);
             MessageBox.Show(
@@ -1226,6 +1490,14 @@ internal sealed class MainForm : Form
     {
         if (disposing)
         {
+            _uiReady = false;
+            if (_releaseHotkeyRegistered && IsHandleCreated)
+            {
+                NativeMethods.UnregisterHotKey(Handle, ReleaseCursorHotkeyId);
+                _releaseHotkeyRegistered = false;
+            }
+            _confinementTimer.Dispose();
+            _cursorConfinement.Dispose();
             SystemEvents.DisplaySettingsChanged -= SystemEventsOnDisplaySettingsChanged;
             SystemEvents.PowerModeChanged -= SystemEventsOnPowerModeChanged;
             RestoreIfRequested();
@@ -1239,5 +1511,26 @@ internal sealed class MainForm : Form
         }
 
         base.Dispose(disposing);
+    }
+
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        if (_uiReady && !Disposing)
+        {
+            StopConfinementRuntime();
+        }
+
+        base.OnHandleDestroyed(e);
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        var recreated = _hadHandle;
+        _hadHandle = true;
+        if (recreated && _uiReady && _settings.ConfineCursor && !Disposing)
+        {
+            BeginInvoke(new Action(EnableCursorConfinement));
+        }
     }
 }

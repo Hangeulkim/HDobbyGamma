@@ -4,10 +4,12 @@ namespace GammaControl;
 
 internal sealed class AppSettingsData
 {
-    public int SchemaVersion { get; set; } = 3;
+    public int SchemaVersion { get; set; } = 4;
     public string Language { get; set; } = UiText.DefaultLanguageCode;
     public bool RestoreOnExit { get; set; } = true;
     public bool StartWithWindows { get; set; }
+    public bool ConfineCursor { get; set; }
+    public string TargetExecutablePath { get; set; } = string.Empty;
     public string SelectedDevice { get; set; } = AppSettings.AllDisplaysKey;
     public Dictionary<string, double> GammaByDevice { get; set; } =
         new(StringComparer.OrdinalIgnoreCase);
@@ -86,11 +88,12 @@ internal sealed class AppSettings
 
     private static void Normalize(AppSettingsData data)
     {
-        data.SchemaVersion = 3;
+        data.SchemaVersion = 4;
         data.Language = UiText.NormalizeLanguageCode(data.Language);
         data.SelectedDevice = string.IsNullOrWhiteSpace(data.SelectedDevice)
             ? AllDisplaysKey
             : data.SelectedDevice;
+        data.TargetExecutablePath ??= string.Empty;
         data.GammaByDevice ??= new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
 
         var cleaned = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
