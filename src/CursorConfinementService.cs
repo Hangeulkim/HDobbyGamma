@@ -7,6 +7,7 @@ namespace GammaControl;
 internal sealed class CursorConfinementService : IDisposable
 {
     private Rectangle? _ownedBounds;
+    private Rectangle? _lastOwnedBounds;
 
     internal bool IsActive => _ownedBounds.HasValue;
     internal Rectangle? CurrentBounds => _ownedBounds;
@@ -25,12 +26,23 @@ internal sealed class CursorConfinementService : IDisposable
         }
 
         _ownedBounds = bounds;
+        _lastOwnedBounds = bounds;
     }
 
     internal void Release()
     {
         if (_ownedBounds is not { } bounds)
         {
+            // Windows may collapse a released clip later, when the former target is
+            // minimized. Clear only a point clip inside our last owned rectangle.
+            if (_lastOwnedBounds is { } lastBounds)
+            {
+                if (!NativeMethods.GetClipCursor(out var laterClip))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                if (ShouldClearCollapsedClip(lastBounds, laterClip) &&
+                    !NativeMethods.ClipCursor(IntPtr.Zero))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
             return;
         }
 
@@ -58,6 +70,10 @@ internal sealed class CursorConfinementService : IDisposable
         Right = bounds.Right,
         Bottom = bounds.Bottom
     };
+
+    internal static bool ShouldClearCollapsedClip(Rectangle lastOwnedBounds, NativeMethods.NativeRect current) =>
+        (current.Right <= current.Left || current.Bottom <= current.Top) &&
+        lastOwnedBounds.Contains(current.Left, current.Top);
 
     public void Dispose() => Release();
 }

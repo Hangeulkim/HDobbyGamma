@@ -19,6 +19,7 @@ internal static class Program
         try
         {
             TestGammaMath();
+            TestCollapsedCursorClipSafety();
             TestLocalizationAndStartupCommand();
             TestSettingsRoundTripAndCorruption();
             TestDisplayEnumerationReadOnly();
@@ -141,6 +142,20 @@ internal static class Program
             var roundTrip = GammaRampBuilder.FromSliderPosition(GammaRampBuilder.ToSliderPosition(gamma));
             Assert(Math.Abs(roundTrip - gamma) / gamma < 0.003, $"Slider round trip {gamma}");
         }
+    }
+
+    private static void TestCollapsedCursorClipSafety()
+    {
+        var owned = Rectangle.FromLTRB(100, 100, 300, 300);
+        Assert(CursorConfinementService.ShouldClearCollapsedClip(owned,
+                new NativeMethods.NativeRect { Left = 180, Top = 190, Right = 180, Bottom = 190 }),
+            "A point clip inside the former target is cleared after minimization");
+        Assert(!CursorConfinementService.ShouldClearCollapsedClip(owned,
+                new NativeMethods.NativeRect { Left = 400, Top = 190, Right = 400, Bottom = 190 }),
+            "Another window's point clip is left intact");
+        Assert(!CursorConfinementService.ShouldClearCollapsedClip(owned,
+                new NativeMethods.NativeRect { Left = 150, Top = 150, Right = 200, Bottom = 200 }),
+            "Another valid cursor clip is left intact");
     }
 
     private static void TestSettingsRoundTripAndCorruption()
@@ -269,13 +284,21 @@ internal static class Program
             Application.DoEvents();
             if (NativeMethods.GetForegroundWindow() == targetWindow.Handle)
             {
+                var found = ForegroundProgram.TryGetClientBounds(Environment.ProcessPath!,
+                    out var clientBounds);
+                if (NativeMethods.GetForegroundWindow() != targetWindow.Handle)
+                {
+                    Console.WriteLine("SKIP: foreground moved during target inspection");
+                }
+                else
+                {
+                    Assert(found && clientBounds.Width > 0 && clientBounds.Height > 0,
+                        "Active target program client area is found");
+                }
                 Assert(ProcessPicker.GetRunningWindows().Any(item =>
                     string.Equals(item.ExecutablePath, Environment.ProcessPath,
                         StringComparison.OrdinalIgnoreCase)),
                     "Running window appears in the process picker");
-                Assert(ForegroundProgram.TryGetClientBounds(Environment.ProcessPath!, out var clientBounds) &&
-                       clientBounds.Width > 0 && clientBounds.Height > 0,
-                    "Active target program client area is found");
                 Assert(!ForegroundProgram.TryGetClientBounds(@"C:\missing\other.exe", out _),
                     "Unrelated program is not treated as the target");
             }
@@ -449,13 +472,32 @@ internal static class Program
                    clipped.Equals(CursorConfinementService.ToNative(expected)),
                 "Enabled rule confines the cursor to the active program window");
 
+            form.ReleaseCursorTemporarily();
+            PumpMessagesFor(250);
+            Assert(NativeMethods.GetClipCursor(out var temporarilyReleased) &&
+                   temporarilyReleased.Equals(CursorConfinementService.ToNative(SystemInformation.VirtualScreen)),
+                "Release shortcut leaves the cursor free for this activation");
+            var confinementCheck = EnumerateControls(form).OfType<CheckBox>().Single(check =>
+                check.Text == UiText.Get(TextId.ConfineCursor));
+            Assert(confinementCheck.Checked, "Temporary release keeps the confinement option checked");
+            for (var attempt = 0; attempt < 3; attempt++)
+                form.HandleConfinementRuntimeFailure(new System.ComponentModel.Win32Exception(5), expected);
+            Assert(confinementCheck.Checked, "Repeated cursor API errors keep the option checked");
+            Assert(EnumerateControls(form).OfType<Label>().Any(label =>
+                    label.Text == UiText.Get(TextId.ConfinePaused)),
+                "Repeated errors visibly pause attempts without losing the saved rule");
+
             NativeMethods.ShowWindow(targetWindow, 6); // SW_MINIMIZE
             PumpMessagesFor(350);
             Assert(NativeMethods.IsIconic(targetWindow), "Target program window is minimized");
             Assert(!ForegroundProgram.TryGetClientBounds(targetExecutable, out _,
                     (uint)Environment.ProcessId),
                 "Minimized target is no longer eligible for confinement");
-            Assert(NativeMethods.GetClipCursor(out var released) &&
+            var hasReleasedClip = NativeMethods.GetClipCursor(out var released);
+            if (hasReleasedClip &&
+                !released.Equals(CursorConfinementService.ToNative(SystemInformation.VirtualScreen)))
+                Console.WriteLine($"CURSOR: after minimize clip={released.Left},{released.Top},{released.Right},{released.Bottom}");
+            Assert(hasReleasedClip &&
                    released.Equals(CursorConfinementService.ToNative(SystemInformation.VirtualScreen)),
                 "Minimizing the target program releases the cursor");
 

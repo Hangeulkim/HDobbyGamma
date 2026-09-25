@@ -76,6 +76,9 @@ internal sealed class MainForm : Form
     private bool _trayNoticeShown;
     private bool _changingTrayVisibility;
     private bool _releaseHotkeyRegistered;
+    private bool _confinementSuppressedUntilFocusLoss;
+    private int _confinementErrorCount;
+    private Rectangle? _failedConfinementBounds;
     private bool _uiReady;
     private bool _hadHandle;
     private double _pendingGamma = 1.0;
@@ -469,7 +472,7 @@ internal sealed class MainForm : Form
         _trayMenu = new ContextMenuStrip();
         _trayOpenItem = new ToolStripMenuItem(UiText.Get(TextId.TrayOpen), null, (_, _) => RestoreFromTray());
         _trayReleaseCursorItem = new ToolStripMenuItem(UiText.Get(TextId.TrayReleaseCursor), null,
-            (_, _) => DisableCursorConfinement(showStatus: true)) { Enabled = false };
+            (_, _) => ReleaseCursorTemporarily()) { Enabled = false };
         _trayExitItem = new ToolStripMenuItem(UiText.Get(TextId.TrayExit), null, (_, _) => ExitCompletely());
         _trayMenu.Items.Add(_trayOpenItem);
         _trayMenu.Items.Add(_trayReleaseCursorItem);
@@ -1084,6 +1087,9 @@ internal sealed class MainForm : Form
         }
         _settings.TargetExecutablePath = choice.ExecutablePath;
         _targetProgramPathBox.Text = choice.Name;
+        _confinementSuppressedUntilFocusLoss = false;
+        _confinementErrorCount = 0;
+        _failedConfinementBounds = null;
         _confineCursorCheck.Enabled = true;
         ScheduleSave();
         if (_settings.ConfineCursor)
@@ -1232,6 +1238,9 @@ internal sealed class MainForm : Form
         }
 
         _settings.ConfineCursor = true;
+        _confinementSuppressedUntilFocusLoss = false;
+        _confinementErrorCount = 0;
+        _failedConfinementBounds = null;
         _trayReleaseCursorItem.Enabled = true;
         SetConfineCheck(true);
         _confinementTimer.Start();
@@ -1241,24 +1250,74 @@ internal sealed class MainForm : Form
 
     private void ConfinementTimerOnTick(object? sender, EventArgs e)
     {
+        if (ForegroundProgram.TryGetClientBounds(_settings.TargetExecutablePath, out var bounds,
+                (uint)Environment.ProcessId))
+        {
+            if (_confinementSuppressedUntilFocusLoss) return;
+            if (_failedConfinementBounds == bounds && _confinementErrorCount >= 3) return;
+            if (_failedConfinementBounds != bounds)
+            {
+                _confinementErrorCount = 0;
+                _failedConfinementBounds = bounds;
+            }
+            try
+            {
+                if (_cursorConfinement.CurrentBounds != bounds) _cursorConfinement.Confine(bounds);
+                _confinementErrorCount = 0;
+            }
+            catch (System.ComponentModel.Win32Exception exception)
+            {
+                try { _cursorConfinement.Release(); }
+                catch (System.ComponentModel.Win32Exception) { /* Keep the original error visible. */ }
+                HandleConfinementRuntimeFailure(exception, bounds);
+            }
+            return;
+        }
+
+        _confinementSuppressedUntilFocusLoss = false;
+        _failedConfinementBounds = null;
         try
         {
-            if (ForegroundProgram.TryGetClientBounds(_settings.TargetExecutablePath, out var bounds,
-                    (uint)Environment.ProcessId))
-            {
-                if (_cursorConfinement.CurrentBounds != bounds)
-                {
-                    _cursorConfinement.Confine(bounds);
-                }
-            }
-            else
-            {
-                _cursorConfinement.Release();
-            }
+            _cursorConfinement.Release();
+            _confinementErrorCount = 0;
         }
         catch (System.ComponentModel.Win32Exception exception)
         {
-            RejectCursorConfinement(UiText.Format(TextId.ConfineFailed, exception.Message));
+            HandleConfinementRuntimeFailure(exception, null);
+        }
+    }
+
+    internal void HandleConfinementRuntimeFailure(
+        System.ComponentModel.Win32Exception exception, Rectangle? attemptedBounds)
+    {
+        _confinementErrorCount++;
+        _failedConfinementBounds = attemptedBounds;
+        ShowStatus(_confinementErrorCount >= 3
+                ? UiText.Get(TextId.ConfinePaused)
+                : UiText.Format(TextId.ConfineFailed, exception.Message), StatusKind.Warning);
+        // A failing write is retried at most three times for the same bounds. A failing
+        // release is retried three times, then the hotkey remains available for recovery.
+        if (attemptedBounds == null && _confinementErrorCount >= 3)
+            _confinementTimer.Stop();
+    }
+
+    internal void ReleaseCursorTemporarily()
+    {
+        if (!_settings.ConfineCursor) return;
+        try
+        {
+            _cursorConfinement.Release();
+            _confinementSuppressedUntilFocusLoss =
+                ForegroundProgram.TryGetClientBounds(_settings.TargetExecutablePath, out _,
+                    (uint)Environment.ProcessId);
+            _confinementErrorCount = 0;
+            _failedConfinementBounds = null;
+            _confinementTimer.Start();
+            ShowStatus(UiText.Get(TextId.ConfineReleased), StatusKind.Info);
+        }
+        catch (System.ComponentModel.Win32Exception exception)
+        {
+            ShowStatus(UiText.Format(TextId.ConfineFailed, exception.Message), StatusKind.Warning);
         }
     }
 
@@ -1278,12 +1337,13 @@ internal sealed class MainForm : Form
         }
 
         _settings.ConfineCursor = false;
+        _confinementSuppressedUntilFocusLoss = false;
         _trayReleaseCursorItem.Enabled = false;
         SetConfineCheck(false);
         ScheduleSave();
         if (showStatus)
         {
-            ShowStatus(UiText.Get(TextId.ConfineReleased), StatusKind.Info);
+            ShowStatus(UiText.Get(TextId.ConfineDisabled), StatusKind.Info);
         }
     }
 
@@ -1320,7 +1380,7 @@ internal sealed class MainForm : Form
     {
         if (message.Msg == WmHotkey && message.WParam == (IntPtr)ReleaseCursorHotkeyId)
         {
-            DisableCursorConfinement(showStatus: true);
+            ReleaseCursorTemporarily();
             return;
         }
 
