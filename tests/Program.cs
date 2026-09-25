@@ -29,11 +29,14 @@ internal static class Program
             {
                 TestNativeCursorConfinement();
                 TestProgramConfinementLifecycle();
+                TestProcessPickerDialog();
             }
 
             if (args.Contains("--native-apply", StringComparer.OrdinalIgnoreCase))
             {
                 TestNativeApplyAndRestore();
+                TestTemporaryProgramGamma();
+                TestProgramGammaFocusLifecycle();
             }
 
             var registryArgument = Array.FindIndex(args, argument =>
@@ -153,12 +156,17 @@ internal static class Program
             Assert(!initial.StartWithWindows, "Start with Windows defaults false");
             Assert(!initial.ConfineCursor, "Mouse confinement defaults off");
             Assert(initial.TargetExecutablePath.Length == 0, "Target program defaults unset");
+            Assert(!initial.ProgramGammaEnabled && initial.ProgramGammaExecutablePath.Length == 0,
+                "Program gamma defaults off and unset");
 
             initial.SelectedDevice = @"monitor:\\?\DISPLAY#MONITOR_B";
             initial.Language = "en";
             initial.StartWithWindows = true;
             initial.ConfineCursor = true;
             initial.TargetExecutablePath = @"C:\Games\Example Game\game.exe";
+            initial.ProgramGammaExecutablePath = @"C:\Games\Other Game\other.exe";
+            initial.ProgramGammaEnabled = true;
+            initial.ProgramGammaValue = 1.35;
             initial.GammaByDevice[@"monitor:\\?\DISPLAY#MONITOR_A"] = 1.25;
             initial.GammaByDevice[@"monitor:\\?\DISPLAY#MONITOR_B"] = 0.80;
             store.Save(initial);
@@ -173,7 +181,10 @@ internal static class Program
             Assert(loaded.ConfineCursor, "Mouse confinement round trip");
             Assert(loaded.TargetExecutablePath == @"C:\Games\Example Game\game.exe",
                 "Target executable path round trip");
-            Assert(loaded.SchemaVersion == 4, "Settings schema upgraded to version 4");
+            Assert(loaded.SchemaVersion == 5, "Settings schema upgraded to version 5");
+            Assert(loaded.ProgramGammaEnabled && loaded.ProgramGammaExecutablePath ==
+                @"C:\Games\Other Game\other.exe" && Math.Abs(loaded.ProgramGammaValue - 1.35) < 0.001,
+                "Program gamma preset round trip");
 
             File.WriteAllText(
                 store.PathForDiagnostics,
@@ -182,7 +193,9 @@ internal static class Program
                 "\"GammaByDevice\":{\"\\\\\\\\.\\\\DISPLAY1\":1.4}}");
             var migrated = store.Load(out var migrationWarning);
             Assert(migrationWarning == SettingsLoadWarning.None, "Version 1 settings migrate without warning");
-            Assert(migrated.SchemaVersion == 4, "Version 1 settings migrate to current schema");
+            Assert(migrated.SchemaVersion == 5, "Version 1 settings migrate to current schema");
+            Assert(!migrated.ProgramGammaEnabled && migrated.ProgramGammaValue == 1.0,
+                "Version 1 receives safe program gamma defaults");
             Assert(!migrated.ConfineCursor, "Version 1 settings keep mouse confinement off");
             Assert(migrated.TargetExecutablePath.Length == 0, "Version 1 has no target program");
             Assert(!migrated.RestoreOnExit, "Version 1 restore preference preserved");
@@ -256,6 +269,10 @@ internal static class Program
             Application.DoEvents();
             if (NativeMethods.GetForegroundWindow() == targetWindow.Handle)
             {
+                Assert(ProcessPicker.GetRunningWindows().Any(item =>
+                    string.Equals(item.ExecutablePath, Environment.ProcessPath,
+                        StringComparison.OrdinalIgnoreCase)),
+                    "Running window appears in the process picker");
                 Assert(ForegroundProgram.TryGetClientBounds(Environment.ProcessPath!, out var clientBounds) &&
                        clientBounds.Width > 0 && clientBounds.Height > 0,
                     "Active target program client area is found");
@@ -325,6 +342,56 @@ internal static class Program
         }
     }
 
+    private static void TestProcessPickerDialog()
+    {
+        using var owner = new Form { Text = "HDobby process picker test",
+            Size = new Size(480, 300) };
+        owner.Show();
+        Application.DoEvents();
+        try
+        {
+            ProcessChoice? RunPicker(bool accept)
+            {
+                using var timer = new System.Windows.Forms.Timer { Interval = 60 };
+                var deadline = DateTime.UtcNow.AddSeconds(8);
+                timer.Tick += (_, _) =>
+                {
+                    var picker = Application.OpenForms.Cast<Form>().FirstOrDefault(form =>
+                        form != owner && form.Text == UiText.Get(TextId.ChooseProcessTitle));
+                    if (picker == null) return;
+                    if (!accept || DateTime.UtcNow >= deadline)
+                    {
+                        picker.DialogResult = DialogResult.Cancel;
+                        return;
+                    }
+                    var list = EnumerateControls(picker).OfType<ListBox>().Single();
+                    for (var index = 0; index < list.Items.Count; index++)
+                    {
+                        if (list.Items[index] is ProcessChoice choice &&
+                            string.Equals(choice.ExecutablePath, Environment.ProcessPath,
+                                StringComparison.OrdinalIgnoreCase))
+                        {
+                            list.SelectedIndex = index;
+                            picker.DialogResult = DialogResult.OK;
+                            return;
+                        }
+                    }
+                };
+                timer.Start();
+                return ProcessPicker.ShowDialog(owner);
+            }
+            var selected = RunPicker(true);
+            Assert(selected != null && string.Equals(selected.ExecutablePath, Environment.ProcessPath,
+                StringComparison.OrdinalIgnoreCase), "Process picker selects a running program");
+            Assert(RunPicker(false) == null, "Process picker cancellation leaves selection unset");
+        }
+        finally
+        {
+            owner.Close();
+            Application.DoEvents();
+        }
+    }
+
     private static void TestProgramConfinementLifecycle()
     {
         if (!NativeMethods.GetClipCursor(out var originalClip) ||
@@ -385,7 +452,8 @@ internal static class Program
             NativeMethods.ShowWindow(targetWindow, 6); // SW_MINIMIZE
             PumpMessagesFor(350);
             Assert(NativeMethods.IsIconic(targetWindow), "Target program window is minimized");
-            Assert(!ForegroundProgram.TryGetClientBounds(targetExecutable, out _),
+            Assert(!ForegroundProgram.TryGetClientBounds(targetExecutable, out _,
+                    (uint)Environment.ProcessId),
                 "Minimized target is no longer eligible for confinement");
             Assert(NativeMethods.GetClipCursor(out var released) &&
                    released.Equals(CursorConfinementService.ToNative(SystemInformation.VirtualScreen)),
@@ -531,7 +599,7 @@ internal static class Program
                 combo.Items.Cast<object>().Any(item => item.ToString() == "한국어") &&
                 combo.Items.Cast<object>().Any(item => item.ToString() == "English"));
             var monitorCombo = controls.OfType<ComboBox>().Single(combo => !ReferenceEquals(combo, languageCombo));
-            var gammaBefore = controls.OfType<NumericUpDown>().Single().Value;
+            var gammaBefore = controls.OfType<NumericUpDown>().First().Value;
             var monitorBefore = monitorCombo.SelectedIndex;
             Assert(monitorCombo.SelectedItem?.ToString()?.StartsWith("모든 모니터", StringComparison.Ordinal) == true,
                 "Monitor combo starts in Korean");
@@ -541,8 +609,11 @@ internal static class Program
 
             Assert(EnumerateControls(form).OfType<Label>().Any(label => label.Text == "Monitor to adjust"),
                 "English UI is rendered after switching language");
-            Assert(controls.OfType<NumericUpDown>().Single().Value == gammaBefore,
+            Assert(controls.OfType<NumericUpDown>().First().Value == gammaBefore,
                 "Language switch preserves gamma value");
+            Assert(controls.OfType<TabPage>().Count() == 4, "Four feature and settings tabs are present");
+            Assert(controls.OfType<TabPage>().Any(tab => tab.Text == "Program gamma"),
+                "Program gamma tab switches to English");
             Assert(monitorCombo.SelectedIndex == monitorBefore,
                 "Language switch preserves monitor selection");
             Assert(monitorCombo.SelectedItem?.ToString()?.StartsWith("All monitors", StringComparison.Ordinal) == true,
@@ -700,6 +771,148 @@ internal static class Program
                        MonitorGammaService.ReadbackTolerance,
                     "Startup reapply restoration read-back");
             }
+        }
+    }
+
+    private static void TestTemporaryProgramGamma()
+    {
+        using var service = new MonitorGammaService();
+        var targets = service.Refresh();
+        Assert(!service.TryStartTemporaryGamma(@"\\.\MISSING", 1.1, out _),
+            "Temporary gamma rejects a missing display");
+        var target = targets.FirstOrDefault(item => item.SupportsGamma && !service.IsLinked(item.DeviceName));
+        if (target == null)
+        {
+            Console.WriteLine("SKIP: no independent gamma display for temporary session");
+            return;
+        }
+
+        var before = service.ReadCurrentRamp(target.DeviceName, out _)!;
+        var otherBefore = targets.Where(item => item.DeviceName != target.DeviceName && item.SupportsGamma)
+            .ToDictionary(item => item.DeviceName,
+                item => service.ReadCurrentRamp(item.DeviceName, out _)!, StringComparer.OrdinalIgnoreCase);
+        var gamma = new[] { 0.90, 1.10 }
+            .OrderByDescending(value => before.MaxDifference(GammaRampBuilder.Build(value))).First();
+        try
+        {
+            var started = service.TryStartTemporaryGamma(target.DeviceName, gamma, out var error);
+            if (!started && service.IsLinked(target.DeviceName))
+            {
+                Console.WriteLine("SKIP: driver linked LUT detected during temporary gamma test");
+                return;
+            }
+            Assert(started, "Temporary program gamma starts: " + error);
+            Assert(service.TemporaryGammaDeviceKey == target.SettingsKey,
+                "Temporary gamma tracks physical display identity");
+            var applied = service.ReadCurrentRamp(target.DeviceName, out _);
+            Assert(applied != null && applied.MaxDifference(GammaRampBuilder.Build(gamma)) <=
+                   MonitorGammaService.ReadbackTolerance,
+                "Temporary gamma is visible in native readback");
+        }
+        finally
+        {
+            Assert(service.TryEndTemporaryGamma(out var error),
+                "Temporary gamma restores after focus loss: " + error);
+            var after = service.ReadCurrentRamp(target.DeviceName, out _);
+            Assert(after != null && before.MaxDifference(after) <= MonitorGammaService.ReadbackTolerance,
+                "Temporary gamma restores the exact previous ramp");
+            foreach (var other in otherBefore)
+            {
+                var otherAfter = service.ReadCurrentRamp(other.Key, out _);
+                Assert(otherAfter != null && other.Value.MaxDifference(otherAfter) <=
+                       MonitorGammaService.LinkedMonitorTolerance,
+                    "Temporary gamma leaves other displays intact");
+            }
+            service.RestoreOwnedRamps();
+        }
+    }
+
+    private static void TestProgramGammaFocusLifecycle()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "GammaControlProgramFocus-" + Guid.NewGuid().ToString("N"));
+        using var inspector = new MonitorGammaService();
+        var displays = inspector.Refresh();
+        var targetExecutable = Path.Combine(AppContext.BaseDirectory, "GammaControl.Tests.exe");
+        var startInfo = new ProcessStartInfo(targetExecutable, "--cursor-target")
+        {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true
+        };
+        startInfo.Environment["DOTNET_ROOT"] = Path.GetDirectoryName(Environment.ProcessPath!)!;
+        using var targetProcess = Process.Start(startInfo) ??
+            throw new InvalidOperationException("Could not launch the program gamma target.");
+        var ready = targetProcess.StandardOutput.ReadLineAsync();
+        if (!ready.Wait(TimeSpan.FromSeconds(10)) ||
+            ready.Result is not { } readyLine ||
+            !readyLine.StartsWith("TARGET_HANDLE:", StringComparison.Ordinal) ||
+            !long.TryParse(readyLine["TARGET_HANDLE:".Length..], CultureInfo.InvariantCulture,
+                out var handleValue))
+            throw new InvalidOperationException("The program gamma target window did not start.");
+        var targetWindow = new IntPtr(handleValue);
+        var targetBounds = Screen.FromHandle(targetWindow).Bounds;
+        var display = displays.FirstOrDefault(item => item.SupportsGamma && !inspector.IsLinked(item.DeviceName) &&
+            Rectangle.Intersect(item.Bounds, targetBounds).Width > 0);
+        if (display == null)
+        {
+            Console.WriteLine("SKIP: no independent display under the program target window");
+            targetProcess.Kill(entireProcessTree: true);
+            targetProcess.WaitForExit(3000);
+            return;
+        }
+
+        var before = inspector.ReadCurrentRamp(display.DeviceName, out _)!;
+        var gamma = new[] { 0.9, 1.1 }
+            .OrderByDescending(value => before.MaxDifference(GammaRampBuilder.Build(value))).First();
+        var settings = new AppSettings(directory);
+        settings.Save(new AppSettingsData { Language = "en", RestoreOnExit = true,
+            ProgramGammaEnabled = true, ProgramGammaExecutablePath = targetExecutable,
+            ProgramGammaValue = gamma });
+        using var main = new MainForm(settingsDirectory: directory, manageStartup: false);
+        bool WaitForRamp(GammaRamp expected)
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(3);
+            while (DateTime.UtcNow < deadline)
+            {
+                Application.DoEvents();
+                var current = inspector.ReadCurrentRamp(display.DeviceName, out _);
+                if (current != null && current.MaxDifference(expected) <= MonitorGammaService.ReadbackTolerance)
+                    return true;
+                Thread.Sleep(30);
+            }
+            return false;
+        }
+        try
+        {
+            main.Show();
+            Application.DoEvents();
+            main.WindowState = FormWindowState.Minimized;
+            Application.DoEvents();
+            NativeMethods.SetForegroundWindow(targetWindow);
+            PumpMessagesFor(300);
+            if (NativeMethods.GetForegroundWindow() != targetWindow)
+            {
+                Console.WriteLine("SKIP: target window could not become foreground");
+                return;
+            }
+            Assert(WaitForRamp(GammaRampBuilder.Build(gamma)),
+                "Program focus applies saved gamma through the running app");
+            main.RestoreFromTray();
+            Application.DoEvents();
+            Assert(WaitForRamp(before),
+                "Leaving program focus restores the pre-activation ramp through the running app");
+        }
+        finally
+        {
+            main.ExitCompletely();
+            if (!targetProcess.HasExited)
+            {
+                targetProcess.Kill(entireProcessTree: true);
+                targetProcess.WaitForExit(3000);
+            }
+            Application.DoEvents();
+            var after = inspector.ReadCurrentRamp(display.DeviceName, out _);
+            Assert(after != null && before.MaxDifference(after) <= MonitorGammaService.ReadbackTolerance,
+                "Program gamma integration leaves display at its original ramp");
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
         }
     }
 

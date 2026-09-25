@@ -4,12 +4,15 @@ namespace GammaControl;
 
 internal sealed class AppSettingsData
 {
-    public int SchemaVersion { get; set; } = 4;
+    public int SchemaVersion { get; set; } = 5;
     public string Language { get; set; } = UiText.DefaultLanguageCode;
     public bool RestoreOnExit { get; set; } = true;
     public bool StartWithWindows { get; set; }
     public bool ConfineCursor { get; set; }
     public string TargetExecutablePath { get; set; } = string.Empty;
+    public string ProgramGammaExecutablePath { get; set; } = string.Empty;
+    public bool ProgramGammaEnabled { get; set; }
+    public double ProgramGammaValue { get; set; } = 1.0;
     public string SelectedDevice { get; set; } = AppSettings.AllDisplaysKey;
     public Dictionary<string, double> GammaByDevice { get; set; } =
         new(StringComparer.OrdinalIgnoreCase);
@@ -88,12 +91,17 @@ internal sealed class AppSettings
 
     private static void Normalize(AppSettingsData data)
     {
-        data.SchemaVersion = 4;
+        data.SchemaVersion = 5;
         data.Language = UiText.NormalizeLanguageCode(data.Language);
         data.SelectedDevice = string.IsNullOrWhiteSpace(data.SelectedDevice)
             ? AllDisplaysKey
             : data.SelectedDevice;
         data.TargetExecutablePath ??= string.Empty;
+        data.ProgramGammaExecutablePath ??= string.Empty;
+        data.ProgramGammaValue = double.IsFinite(data.ProgramGammaValue)
+            ? Math.Clamp(data.ProgramGammaValue, GammaRampBuilder.MinimumGamma,
+                GammaRampBuilder.MaximumGamma)
+            : 1.0;
         data.GammaByDevice ??= new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
 
         var cleaned = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);

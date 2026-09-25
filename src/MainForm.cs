@@ -52,6 +52,15 @@ internal sealed class MainForm : Form
     private readonly CheckBox _startWithWindowsCheck;
     private readonly TextBox _targetProgramPathBox;
     private readonly CheckBox _confineCursorCheck;
+    private readonly TextBox _programGammaProcessBox;
+    private readonly NumericUpDown _programGammaNumber;
+    private readonly CheckBox _programGammaCheck;
+    private readonly System.Windows.Forms.Timer _programGammaTimer;
+    private readonly TabPage _gammaTab;
+    private readonly TabPage _programGammaTab;
+    private readonly TabPage _mouseTab;
+    private readonly TabPage _settingsTab;
+    private readonly TabControl _tabs;
     private readonly NotifyIcon _notifyIcon;
     private readonly ContextMenuStrip _trayMenu;
     private readonly ToolStripMenuItem _trayOpenItem;
@@ -72,6 +81,7 @@ internal sealed class MainForm : Form
     private double _pendingGamma = 1.0;
     private string? _pendingDeviceName;
     private bool _hasPendingApply;
+    private string? _lastProgramGammaAttemptKey;
 
     private Label _headerTitleLabel = null!;
     private Label _headerSubtitleLabel = null!;
@@ -87,6 +97,10 @@ internal sealed class MainForm : Form
     private Label _shortcutLabel = null!;
     private Label _targetProgramLabel = null!;
     private Button _chooseProgramButton = null!;
+    private Label _programGammaProcessLabel = null!;
+    private Label _programGammaValueLabel = null!;
+    private Label _programGammaNoteLabel = null!;
+    private Button _chooseProgramGammaButton = null!;
 
     internal MainForm(
         bool previewOnly = false,
@@ -110,8 +124,8 @@ internal sealed class MainForm : Form
 
         Text = UiText.Get(TextId.WindowTitle);
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(680, 700);
-        ClientSize = new Size(720, 740);
+        MinimumSize = new Size(680, 570);
+        ClientSize = new Size(720, 620);
         BackColor = Color.FromArgb(245, 247, 250);
         Font = new Font("Segoe UI", 10F, FontStyle.Regular, GraphicsUnit.Point);
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -135,12 +149,13 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 5,
             Padding = new Padding(24, 20, 24, 18),
             BackColor = BackColor
         };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         Controls.Add(root);
@@ -160,13 +175,26 @@ internal sealed class MainForm : Form
         var header = BuildHeader();
         root.Controls.Add(header, 0, 0);
 
+        _tabs = new TabControl
+        {
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 14, 0, 12),
+            Padding = new Point(15, 8)
+        };
+        _gammaTab = new TabPage { UseVisualStyleBackColor = false, BackColor = Color.White };
+        _programGammaTab = new TabPage { UseVisualStyleBackColor = false, BackColor = Color.White };
+        _mouseTab = new TabPage { UseVisualStyleBackColor = false, BackColor = Color.White };
+        _settingsTab = new TabPage { UseVisualStyleBackColor = false, BackColor = Color.White };
+        _tabs.TabPages.AddRange(new[] { _gammaTab, _programGammaTab, _mouseTab, _settingsTab });
+        root.Controls.Add(_tabs, 0, 1);
+
         var card = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 12,
+            RowCount = 7,
             Padding = new Padding(22, 18, 22, 18),
-            Margin = new Padding(0, 18, 0, 12),
+            Margin = Padding.Empty,
             BackColor = Color.White
         };
         card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -176,12 +204,7 @@ internal sealed class MainForm : Form
         card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.Controls.Add(card, 0, 1);
+        _gammaTab.Controls.Add(card);
 
         _monitorSectionLabel = NewSectionLabel(UiText.Get(TextId.MonitorSection));
         card.Controls.Add(_monitorSectionLabel, 0, 0);
@@ -282,6 +305,10 @@ internal sealed class MainForm : Form
         buttonRow.Controls.Add(_resetAllButton);
         card.Controls.Add(buttonRow, 0, 6);
 
+        var settingsPanel = NewTabPanel(_settingsTab);
+        var mousePanel = NewTabPanel(_mouseTab);
+        var programGammaPanel = NewTabPanel(_programGammaTab);
+
         _restoreOnExitCheck = new CheckBox
         {
             AutoSize = false,
@@ -293,7 +320,7 @@ internal sealed class MainForm : Form
             AccessibleName = UiText.Get(TextId.RestoreAccessible)
         };
         _restoreOnExitCheck.CheckedChanged += RestoreOnExitCheckOnCheckedChanged;
-        card.Controls.Add(_restoreOnExitCheck, 0, 7);
+        settingsPanel.Controls.Add(_restoreOnExitCheck, 0, 0);
 
         _startWithWindowsCheck = new CheckBox
         {
@@ -306,7 +333,7 @@ internal sealed class MainForm : Form
             AccessibleName = UiText.Get(TextId.StartAccessible)
         };
         _startWithWindowsCheck.CheckedChanged += StartWithWindowsCheckOnCheckedChanged;
-        card.Controls.Add(_startWithWindowsCheck, 0, 8);
+        settingsPanel.Controls.Add(_startWithWindowsCheck, 0, 1);
 
         var programRow = new TableLayoutPanel
         {
@@ -318,7 +345,7 @@ internal sealed class MainForm : Form
         };
         programRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 115F));
         programRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-        programRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 95F));
+        programRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 115F));
         _targetProgramLabel = new Label
         {
             Dock = DockStyle.Fill,
@@ -329,7 +356,7 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ReadOnly = true,
-            Text = _settings.TargetExecutablePath,
+            Text = ProcessDisplayName(_settings.TargetExecutablePath),
             AccessibleName = UiText.Get(TextId.TargetProgramAccessible)
         };
         _chooseProgramButton = NewButton(UiText.Get(TextId.ChooseProgram), ChooseProgramButtonOnClick, false);
@@ -340,7 +367,7 @@ internal sealed class MainForm : Form
         programRow.Controls.Add(_targetProgramLabel, 0, 0);
         programRow.Controls.Add(_targetProgramPathBox, 1, 0);
         programRow.Controls.Add(_chooseProgramButton, 2, 0);
-        card.Controls.Add(programRow, 0, 9);
+        mousePanel.Controls.Add(programRow, 0, 0);
 
         _confineCursorCheck = new CheckBox
         {
@@ -353,7 +380,55 @@ internal sealed class MainForm : Form
             AccessibleName = UiText.Get(TextId.ConfineAccessible)
         };
         _confineCursorCheck.CheckedChanged += ConfineCursorCheckOnCheckedChanged;
-        card.Controls.Add(_confineCursorCheck, 0, 10);
+        mousePanel.Controls.Add(_confineCursorCheck, 0, 1);
+
+        var programGammaRow = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top, ColumnCount = 3, RowCount = 1,
+            Height = 36, Margin = new Padding(0, 2, 0, 14)
+        };
+        programGammaRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 115F));
+        programGammaRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        programGammaRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 115F));
+        _programGammaProcessLabel = new Label { Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft };
+        _programGammaProcessBox = new TextBox { Dock = DockStyle.Fill, ReadOnly = true,
+            Text = ProcessDisplayName(_settings.ProgramGammaExecutablePath) };
+        _chooseProgramGammaButton = NewButton(string.Empty, ChooseProgramGammaButtonOnClick, false);
+        _chooseProgramGammaButton.AutoSize = false;
+        _chooseProgramGammaButton.Dock = DockStyle.Fill;
+        _chooseProgramGammaButton.Padding = Padding.Empty;
+        _chooseProgramGammaButton.Margin = new Padding(6, 0, 0, 0);
+        programGammaRow.Controls.Add(_programGammaProcessLabel, 0, 0);
+        programGammaRow.Controls.Add(_programGammaProcessBox, 1, 0);
+        programGammaRow.Controls.Add(_chooseProgramGammaButton, 2, 0);
+        programGammaPanel.Controls.Add(programGammaRow, 0, 0);
+
+        var programValueRow = new TableLayoutPanel { Dock = DockStyle.Top,
+            ColumnCount = 2, Height = 42, Margin = new Padding(0, 0, 0, 12) };
+        programValueRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        programValueRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120F));
+        _programGammaValueLabel = new Label { Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft };
+        _programGammaNumber = new NumericUpDown
+        {
+            DecimalPlaces = 2, Minimum = (decimal)GammaRampBuilder.MinimumGamma,
+            Maximum = (decimal)GammaRampBuilder.MaximumGamma, Increment = 0.05M,
+            Value = (decimal)_settings.ProgramGammaValue, Dock = DockStyle.Fill,
+            TextAlign = HorizontalAlignment.Center
+        };
+        _programGammaNumber.ValueChanged += ProgramGammaNumberOnValueChanged;
+        programValueRow.Controls.Add(_programGammaValueLabel, 0, 0);
+        programValueRow.Controls.Add(_programGammaNumber, 1, 0);
+        programGammaPanel.Controls.Add(programValueRow, 0, 1);
+
+        _programGammaCheck = new CheckBox { Dock = DockStyle.Top, Height = 30,
+            Checked = _settings.ProgramGammaEnabled, Margin = new Padding(1, 0, 0, 12) };
+        _programGammaCheck.CheckedChanged += ProgramGammaCheckOnCheckedChanged;
+        programGammaPanel.Controls.Add(_programGammaCheck, 0, 2);
+        _programGammaNoteLabel = new Label { Dock = DockStyle.Top, AutoSize = true,
+            ForeColor = Color.FromArgb(102, 112, 133), MaximumSize = new Size(590, 0) };
+        programGammaPanel.Controls.Add(_programGammaNoteLabel, 0, 3);
 
         _statusLabel = new Label
         {
@@ -369,7 +444,8 @@ internal sealed class MainForm : Form
                 : UiText.Get(TextId.Ready),
             TextAlign = ContentAlignment.MiddleLeft
         };
-        card.Controls.Add(_statusLabel, 0, 11);
+        _statusLabel.Margin = new Padding(0, 0, 0, 10);
+        root.Controls.Add(_statusLabel, 0, 2);
 
         _caveatLabel = new Label
         {
@@ -379,7 +455,7 @@ internal sealed class MainForm : Form
             ForeColor = Color.FromArgb(103, 112, 128),
             Margin = new Padding(2, 0, 0, 4)
         };
-        root.Controls.Add(_caveatLabel, 0, 2);
+        root.Controls.Add(_caveatLabel, 0, 3);
 
         _shortcutLabel = new Label
         {
@@ -388,7 +464,7 @@ internal sealed class MainForm : Form
             ForeColor = Color.FromArgb(125, 132, 146),
             Margin = new Padding(2, 0, 0, 0)
         };
-        root.Controls.Add(_shortcutLabel, 0, 3);
+        root.Controls.Add(_shortcutLabel, 0, 4);
 
         _trayMenu = new ContextMenuStrip();
         _trayOpenItem = new ToolStripMenuItem(UiText.Get(TextId.TrayOpen), null, (_, _) => RestoreFromTray());
@@ -416,6 +492,8 @@ internal sealed class MainForm : Form
         _displayRefreshTimer.Tick += DisplayRefreshTimerOnTick;
         _confinementTimer = new System.Windows.Forms.Timer { Interval = 150 };
         _confinementTimer.Tick += ConfinementTimerOnTick;
+        _programGammaTimer = new System.Windows.Forms.Timer { Interval = 180 };
+        _programGammaTimer.Tick += ProgramGammaTimerOnTick;
 
         FormClosing += MainFormOnFormClosing;
         Resize += MainFormOnResize;
@@ -423,6 +501,7 @@ internal sealed class MainForm : Form
         Shown += MainFormOnShown;
         SystemEvents.DisplaySettingsChanged += SystemEventsOnDisplaySettingsChanged;
         SystemEvents.PowerModeChanged += SystemEventsOnPowerModeChanged;
+        ApplyLanguage();
         _uiReady = true;
     }
 
@@ -533,6 +612,31 @@ internal sealed class MainForm : Form
         return button;
     }
 
+    private static TableLayoutPanel NewTabPanel(TabPage tab)
+    {
+        var panel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5,
+            Padding = new Padding(22, 22, 22, 18),
+            BackColor = Color.White
+        };
+        for (var index = 0; index < 4; index++)
+            panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        tab.Controls.Add(panel);
+        return panel;
+    }
+
+    private static string ProcessDisplayName(string? executablePath) =>
+        string.IsNullOrWhiteSpace(executablePath)
+            ? string.Empty
+            : Path.GetFileNameWithoutExtension(executablePath);
+
+    internal void SelectPreviewTab(int index)
+    {
+        if (index >= 0 && index < _tabs.TabCount) _tabs.SelectedIndex = index;
+    }
+
     private void MainFormOnShown(object? sender, EventArgs e)
     {
         RefreshMonitors(reapply: !_previewOnly);
@@ -554,6 +658,11 @@ internal sealed class MainForm : Form
         if (_settings.ConfineCursor && !_previewOnly)
         {
             EnableCursorConfinement();
+        }
+
+        if (_settings.ProgramGammaEnabled && !_previewOnly)
+        {
+            _programGammaTimer.Start();
         }
 
         if (_startHidden)
@@ -580,6 +689,10 @@ internal sealed class MainForm : Form
         Text = UiText.Get(TextId.WindowTitle);
         _headerTitleLabel.Text = UiText.Get(TextId.HeaderTitle);
         _headerSubtitleLabel.Text = UiText.Get(TextId.HeaderSubtitle);
+        _gammaTab.Text = UiText.Get(TextId.TabGamma);
+        _programGammaTab.Text = UiText.Get(TextId.TabProgramGamma);
+        _mouseTab.Text = UiText.Get(TextId.TabMouse);
+        _settingsTab.Text = UiText.Get(TextId.TabSettings);
         _languageLabel.Text = UiText.Get(TextId.LanguageLabel);
         _monitorSectionLabel.Text = UiText.Get(TextId.MonitorSection);
         _monitorCombo.AccessibleName = UiText.Get(TextId.MonitorAccessible);
@@ -598,6 +711,13 @@ internal sealed class MainForm : Form
         _targetProgramLabel.Text = UiText.Get(TextId.TargetProgram);
         _targetProgramPathBox.AccessibleName = UiText.Get(TextId.TargetProgramAccessible);
         _chooseProgramButton.Text = UiText.Get(TextId.ChooseProgram);
+        _programGammaProcessLabel.Text = UiText.Get(TextId.TargetProgram);
+        _programGammaProcessBox.AccessibleName = UiText.Get(TextId.ProgramGammaProcessAccessible);
+        _chooseProgramGammaButton.Text = UiText.Get(TextId.ChooseProgram);
+        _programGammaValueLabel.Text = UiText.Get(TextId.ProgramGammaValue);
+        _programGammaNumber.AccessibleName = UiText.Get(TextId.ProgramGammaValue);
+        _programGammaCheck.Text = UiText.Get(TextId.ProgramGammaEnable);
+        _programGammaNoteLabel.Text = UiText.Get(TextId.ProgramGammaNote);
         _confineCursorCheck.Text = UiText.Get(TextId.ConfineCursor);
         _confineCursorCheck.AccessibleName = UiText.Get(TextId.ConfineAccessible);
         _caveatLabel.Text = UiText.Get(TextId.Caveat);
@@ -616,6 +736,12 @@ internal sealed class MainForm : Form
         try
         {
             var targets = _gammaService.Refresh();
+            if (!_gammaService.TryEndTemporaryGamma(out var temporaryError))
+            {
+                ShowStatus(temporaryError ?? UiText.Get(TextId.ProgramGammaRestoreFailed), StatusKind.Error);
+                return;
+            }
+            _lastProgramGammaAttemptKey = null;
             var migratedSettings = MigrateLegacyDisplayKeys(targets);
             foreach (var target in targets)
             {
@@ -712,7 +838,9 @@ internal sealed class MainForm : Form
 
     private void UpdateEditorForSelection()
     {
-        _confineCursorCheck.Enabled = !_previewOnly && File.Exists(_settings.TargetExecutablePath);
+        _confineCursorCheck.Enabled = !_previewOnly && !string.IsNullOrWhiteSpace(_settings.TargetExecutablePath);
+        _programGammaCheck.Enabled = !_previewOnly &&
+            !string.IsNullOrWhiteSpace(_settings.ProgramGammaExecutablePath);
         if (_monitorCombo.SelectedItem is DisplayTarget target)
         {
             var linked = _gammaService.IsLinked(target.DeviceName);
@@ -942,19 +1070,8 @@ internal sealed class MainForm : Form
 
     private void ChooseProgramButtonOnClick(object? sender, EventArgs e)
     {
-        using var dialog = new OpenFileDialog
-        {
-            Title = UiText.Get(TextId.TargetProgram),
-            Filter = "Programs (*.exe)|*.exe",
-            CheckFileExists = true,
-            FileName = File.Exists(_settings.TargetExecutablePath)
-                ? _settings.TargetExecutablePath
-                : string.Empty
-        };
-        if (dialog.ShowDialog(this) != DialogResult.OK)
-        {
-            return;
-        }
+        var choice = ProcessPicker.ShowDialog(this);
+        if (choice == null) return;
 
         try
         {
@@ -965,13 +1082,114 @@ internal sealed class MainForm : Form
             ShowStatus(UiText.Format(TextId.ConfineFailed, exception.Message), StatusKind.Error);
             return;
         }
-        _settings.TargetExecutablePath = Path.GetFullPath(dialog.FileName);
-        _targetProgramPathBox.Text = _settings.TargetExecutablePath;
+        _settings.TargetExecutablePath = choice.ExecutablePath;
+        _targetProgramPathBox.Text = choice.Name;
         _confineCursorCheck.Enabled = true;
         ScheduleSave();
         if (_settings.ConfineCursor)
         {
             ShowStatus(UiText.Get(TextId.ConfineEnabled), StatusKind.Info);
+        }
+    }
+
+    private void ChooseProgramGammaButtonOnClick(object? sender, EventArgs e)
+    {
+        var choice = ProcessPicker.ShowDialog(this);
+        if (choice == null) return;
+        if (!StopProgramGammaRuntime()) return;
+        _settings.ProgramGammaExecutablePath = choice.ExecutablePath;
+        _programGammaProcessBox.Text = choice.Name;
+        _programGammaCheck.Enabled = !_previewOnly;
+        _lastProgramGammaAttemptKey = null;
+        ScheduleSave();
+        if (_settings.ProgramGammaEnabled) _programGammaTimer.Start();
+    }
+
+    private void ProgramGammaNumberOnValueChanged(object? sender, EventArgs e)
+    {
+        if (_suppressInput) return;
+        _settings.ProgramGammaValue = (double)_programGammaNumber.Value;
+        _lastProgramGammaAttemptKey = null;
+        ScheduleSave();
+    }
+
+    private void ProgramGammaCheckOnCheckedChanged(object? sender, EventArgs e)
+    {
+        if (_suppressInput || _previewOnly) return;
+        if (_programGammaCheck.Checked)
+        {
+            if (string.IsNullOrWhiteSpace(_settings.ProgramGammaExecutablePath))
+            {
+                SetProgramGammaCheck(false);
+                ShowStatus(UiText.Get(TextId.ProgramGammaRequiresProcess), StatusKind.Warning);
+                return;
+            }
+            _settings.ProgramGammaEnabled = true;
+            _lastProgramGammaAttemptKey = null;
+            _programGammaTimer.Start();
+        }
+        else
+        {
+            if (!StopProgramGammaRuntime())
+            {
+                SetProgramGammaCheck(true);
+                return;
+            }
+            _settings.ProgramGammaEnabled = false;
+        }
+        ScheduleSave();
+    }
+
+    private void SetProgramGammaCheck(bool enabled)
+    {
+        _suppressInput = true;
+        _programGammaCheck.Checked = enabled;
+        _suppressInput = false;
+    }
+
+    private bool StopProgramGammaRuntime()
+    {
+        _programGammaTimer.Stop();
+        if (_gammaService.TryEndTemporaryGamma(out var error))
+        {
+            _lastProgramGammaAttemptKey = null;
+            return true;
+        }
+        ShowStatus(error ?? UiText.Get(TextId.ProgramGammaRestoreFailed), StatusKind.Error);
+        _programGammaTimer.Start();
+        return false;
+    }
+
+    private void ProgramGammaTimerOnTick(object? sender, EventArgs e)
+    {
+        if (!ForegroundProgram.TryGetClientBounds(_settings.ProgramGammaExecutablePath, out var bounds,
+                (uint)Environment.ProcessId))
+        {
+            _lastProgramGammaAttemptKey = null;
+            if (!_gammaService.TryEndTemporaryGamma(out var error))
+                ShowStatus(error ?? UiText.Get(TextId.ProgramGammaRestoreFailed), StatusKind.Error);
+            return;
+        }
+
+        var target = _gammaService.Targets
+            .OrderByDescending(item => Rectangle.Intersect(item.Bounds, bounds).Width *
+                                       Rectangle.Intersect(item.Bounds, bounds).Height)
+            .FirstOrDefault();
+        if (target == null || Rectangle.Intersect(target.Bounds, bounds).IsEmpty) return;
+        if (string.Equals(_gammaService.TemporaryGammaDeviceKey, target.SettingsKey,
+                StringComparison.OrdinalIgnoreCase)) return;
+        if (!_gammaService.TryEndTemporaryGamma(out var restoreError))
+        {
+            ShowStatus(restoreError ?? UiText.Get(TextId.ProgramGammaRestoreFailed), StatusKind.Error);
+            return;
+        }
+        if (string.Equals(_lastProgramGammaAttemptKey, target.SettingsKey,
+                StringComparison.OrdinalIgnoreCase)) return;
+        _lastProgramGammaAttemptKey = target.SettingsKey;
+        if (!_gammaService.TryStartTemporaryGamma(target.DeviceName,
+                _settings.ProgramGammaValue, out var applyError))
+        {
+            ShowStatus(applyError ?? UiText.Get(TextId.ProgramGammaApplyFailed), StatusKind.Warning);
         }
     }
 
@@ -994,7 +1212,7 @@ internal sealed class MainForm : Form
 
     private void EnableCursorConfinement()
     {
-        if (!File.Exists(_settings.TargetExecutablePath))
+        if (string.IsNullOrWhiteSpace(_settings.TargetExecutablePath))
         {
             RejectCursorConfinement(UiText.Get(TextId.ConfineRequiresProgram));
             return;
@@ -1025,7 +1243,8 @@ internal sealed class MainForm : Form
     {
         try
         {
-            if (ForegroundProgram.TryGetClientBounds(_settings.TargetExecutablePath, out var bounds))
+            if (ForegroundProgram.TryGetClientBounds(_settings.TargetExecutablePath, out var bounds,
+                    (uint)Environment.ProcessId))
             {
                 if (_cursorConfinement.CurrentBounds != bounds)
                 {
@@ -1329,6 +1548,12 @@ internal sealed class MainForm : Form
 
         CancelPendingApply();
         StopConfinementRuntime();
+        if (!StopProgramGammaRuntime() && e.CloseReason == CloseReason.UserClosing)
+        {
+            e.Cancel = true;
+            _allowExit = false;
+            return;
+        }
         _saveTimer.Stop();
         _displayRefreshTimer.Stop();
         TrySaveSettings();
@@ -1359,6 +1584,10 @@ internal sealed class MainForm : Form
 
     internal int RestoreIfRequested()
     {
+        if (!_previewOnly)
+        {
+            _gammaService.TryEndTemporaryGamma(out _);
+        }
         if (_restored || _previewOnly || !_settings.RestoreOnExit)
         {
             return 0;
@@ -1497,6 +1726,8 @@ internal sealed class MainForm : Form
                 _releaseHotkeyRegistered = false;
             }
             _confinementTimer.Dispose();
+            _programGammaTimer.Dispose();
+            _gammaService.TryEndTemporaryGamma(out _);
             _cursorConfinement.Dispose();
             SystemEvents.DisplaySettingsChanged -= SystemEventsOnDisplaySettingsChanged;
             SystemEvents.PowerModeChanged -= SystemEventsOnPowerModeChanged;

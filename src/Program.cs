@@ -4,7 +4,7 @@ namespace GammaControl;
 
 internal static class Program
 {
-    private sealed record LaunchOptions(string? RenderPath, string? Language, bool StartHidden);
+    private sealed record LaunchOptions(string? RenderPath, string? Language, bool StartHidden, int RenderTab);
 
     private static MainForm? _mainForm;
 
@@ -16,7 +16,7 @@ internal static class Program
 
         if (options.RenderPath != null)
         {
-            return RenderPreview(options.RenderPath, options.Language);
+            return RenderPreview(options.RenderPath, options.Language, options.RenderTab);
         }
 
         var earlySettings = new AppSettings().Load(out _);
@@ -141,6 +141,7 @@ internal static class Program
         string? renderPath = null;
         string? language = null;
         var startHidden = false;
+        var renderTab = 0;
 
         for (var index = 0; index < args.Count; index++)
         {
@@ -156,12 +157,18 @@ internal static class Program
             {
                 startHidden = true;
             }
+            else if (string.Equals(args[index], "--tab", StringComparison.OrdinalIgnoreCase) &&
+                     index + 1 < args.Count && int.TryParse(args[index + 1], out var requestedTab))
+            {
+                renderTab = requestedTab;
+                index++;
+            }
         }
 
-        return new LaunchOptions(renderPath, language, startHidden);
+        return new LaunchOptions(renderPath, language, startHidden, renderTab);
     }
 
-    private static int RenderPreview(string outputPath, string? language)
+    private static int RenderPreview(string outputPath, string? language, int tab)
     {
         var settingsDirectory = Path.Combine(
             Path.GetTempPath(),
@@ -175,6 +182,7 @@ internal static class Program
         form.ShowInTaskbar = false;
         form.Opacity = 0;
         form.Show();
+        form.SelectPreviewTab(tab);
         Application.DoEvents();
         form.PerformLayout();
         Application.DoEvents();

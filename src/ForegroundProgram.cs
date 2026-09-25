@@ -5,7 +5,8 @@ namespace GammaControl;
 
 internal static class ForegroundProgram
 {
-    internal static bool TryGetClientBounds(string executablePath, out Rectangle bounds)
+    internal static bool TryGetClientBounds(string executablePath, out Rectangle bounds,
+        uint excludedProcessId = 0)
     {
         bounds = Rectangle.Empty;
         if (string.IsNullOrWhiteSpace(executablePath))
@@ -15,7 +16,8 @@ internal static class ForegroundProgram
 
         var window = NativeMethods.GetForegroundWindow();
         if (window == IntPtr.Zero || !NativeMethods.IsWindowVisible(window) || NativeMethods.IsIconic(window) ||
-            NativeMethods.GetWindowThreadProcessId(window, out var processId) == 0 || processId == 0)
+            NativeMethods.GetWindowThreadProcessId(window, out var processId) == 0 || processId == 0 ||
+            processId == excludedProcessId)
         {
             return false;
         }

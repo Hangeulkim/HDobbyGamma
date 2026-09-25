@@ -82,6 +82,10 @@ internal sealed class ApplyResult
 
 internal sealed class MonitorGammaService : IDisposable
 {
+    private sealed record TemporaryGammaState(
+        string SettingsKey, GammaRamp Before, GammaRamp? PreviousOwner,
+        bool PreviousForceRestore, double PreviousGamma);
+
     // Gamma ramps are commonly quantized to 8-bit steps (about 128 units of round-off
     // in the 16-bit API). Keep enough room for that without accepting a ignored 0.01-
     // 0.02 gamma change as verified.
@@ -92,6 +96,7 @@ internal sealed class MonitorGammaService : IDisposable
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DisplayTarget> _knownTargets = new(StringComparer.OrdinalIgnoreCase);
     private List<DisplayTarget> _targets = new();
+    private TemporaryGammaState? _temporaryGamma;
     private bool _disposed;
 
     internal IReadOnlyList<DisplayTarget> Targets
@@ -136,6 +141,88 @@ internal sealed class MonitorGammaService : IDisposable
             var target = _targets.FirstOrDefault(item =>
                 string.Equals(item.DeviceName, deviceName, StringComparison.OrdinalIgnoreCase));
             return target != null && _linkedGroupsBySettingsKey.ContainsKey(target.SettingsKey);
+        }
+    }
+
+    internal string? TemporaryGammaDeviceKey
+    {
+        get { lock (_sync) { return _temporaryGamma?.SettingsKey; } }
+    }
+
+    internal bool TryStartTemporaryGamma(string deviceName, double gamma, out string? error)
+    {
+        lock (_sync)
+        {
+            ThrowIfDisposed();
+            error = null;
+            if (_temporaryGamma != null && !TryEndTemporaryGamma(out error)) return false;
+            var target = _targets.FirstOrDefault(item =>
+                string.Equals(item.DeviceName, deviceName, StringComparison.OrdinalIgnoreCase));
+            if (target == null || !target.SupportsGamma)
+            {
+                error = UiText.Get(TextId.MonitorUnsupported);
+                return false;
+            }
+            var before = TryReadRamp(target.DeviceName, out error);
+            if (before == null) return false;
+            var session = new TemporaryGammaState(target.SettingsKey, before,
+                target.LastAppliedRamp?.Clone(), target.ForceRestoreOriginal, target.CurrentGamma);
+            var result = ApplyGamma(target.DeviceName, gamma);
+            if (!result.IsSuccess || result.UnverifiedDevices.Count > 0 ||
+                result.UnexpectedlyChangedDevices.Count > 0)
+            {
+                error = result.ErrorMessage ?? UiText.Get(TextId.ProgramGammaApplyFailed);
+                if (result.ChangedDevices.Count > 0 && !result.RolledBack)
+                {
+                    _temporaryGamma = session;
+                    TryEndTemporaryGamma(out _);
+                }
+                return false;
+            }
+            _temporaryGamma = session;
+            return true;
+        }
+    }
+
+    internal bool TryEndTemporaryGamma(out string? error)
+    {
+        lock (_sync)
+        {
+            error = null;
+            var session = _temporaryGamma;
+            if (session == null) return true;
+            var target = _targets.FirstOrDefault(item =>
+                string.Equals(item.SettingsKey, session.SettingsKey, StringComparison.OrdinalIgnoreCase));
+            if (target == null)
+            {
+                _temporaryGamma = null;
+                return true;
+            }
+            var current = TryReadRamp(target.DeviceName, out error);
+            if (current == null) return false;
+            if (target.LastAppliedRamp != null && !target.ForceRestoreOriginal &&
+                current.MaxDifference(target.LastAppliedRamp) > ReadbackTolerance)
+            {
+                // A different color manager took ownership. Leave its ramp intact.
+                target.LastAppliedRamp = null;
+                target.ForceRestoreOriginal = false;
+                _temporaryGamma = null;
+                return true;
+            }
+            if (!TrySetRamp(target.DeviceName, session.Before, out error)) return false;
+            var readback = TryReadRamp(target.DeviceName, out error);
+            if (readback == null || readback.MaxDifference(session.Before) > ReadbackTolerance)
+            {
+                target.LastAppliedRamp = readback?.Clone() ?? target.LastAppliedRamp;
+                target.ForceRestoreOriginal = readback == null;
+                error ??= UiText.Get(TextId.ProgramGammaRestoreFailed);
+                return false;
+            }
+            target.LastAppliedRamp = session.PreviousOwner?.Clone();
+            target.ForceRestoreOriginal = session.PreviousForceRestore;
+            target.CurrentGamma = session.PreviousGamma;
+            _temporaryGamma = null;
+            return true;
         }
     }
 
@@ -219,6 +306,11 @@ internal sealed class MonitorGammaService : IDisposable
         lock (_sync)
         {
             ThrowIfDisposed();
+            if (_temporaryGamma != null && !TryEndTemporaryGamma(out var restoreError))
+            {
+                return new ApplyResult { ErrorMessage = restoreError ??
+                    UiText.Get(TextId.ProgramGammaRestoreFailed) };
+            }
             var ramp = GammaRampBuilder.Build(gamma);
             var selected = string.IsNullOrWhiteSpace(deviceName)
                 ? _targets.ToList()
